@@ -1,0 +1,15 @@
+# Por defecto, normalizar a LF en el repositorio.
+* text=auto
+
+# Los .CR1 se suben al equipo tal como estan en disco, y el limite de 8192
+# bytes del firmware cuenta cada salto de linea. Fijar CRLF deja el tamano
+# en disco determinista en cualquier maquina, en vez de depender de la
+# configuracion de core.autocrlf de cada uno.
+*.CR1 text eol=crlf
+*.cr1 text eol=crlf
+
+# cmd.exe necesita CRLF para interpretar bien los .bat
+*.bat text eol=crlf
+
+# Codigo fuente del firmware, por si se referencia
+*.ino text

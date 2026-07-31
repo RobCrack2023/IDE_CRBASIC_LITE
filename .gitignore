@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Empaquetado
+build/
+dist/
+*.egg-info/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+
+# Sistema
+Thumbs.db
+desktop.ini

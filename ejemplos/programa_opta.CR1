@@ -1,0 +1,104 @@
+'==============================================================
+' OptaPakBus — Programa de monitoreo de ejemplo
+' Arduino Opta / firmware OptaPakBus v1.2
+'
+' Hardware mapeado:
+'   A0 (AI1) - Sensor presión    4-20mA  → 0-10 bar
+'   A1 (AI2) - Sensor caudal     4-20mA  → 0-100 L/min
+'   A2 (AI3) - Sensor nivel      4-20mA  → 0-5 m
+'   A4 (DI1) - Sensor temperatura VoltSE → 0-50 °C (10mV/°C)
+'   A7        - Voltaje fuente (BattV x3.351)
+'   DO1       - Bomba (relé)
+'
+' Limitaciones del parser Opta:
+'   - Expresiones solo lineales: Var * Const + Const
+'   - Condiciones: Var <op> Const  (AND/OR soportado)
+'   - Max 8 Const, 16 instrucciones, 4 tablas, 32 campos c/u
+'==============================================================
+
+StationName = Opta_Monitoreo
+
+'-- Constantes de calibración ------------------------------------
+' Conversión 4-20mA → EU:  EU = mA * (EUmax/16) - (4 * EUmax/16)
+Const Pres_Mult  = 0.625    ' 10 bar / 16 mA
+Const Pres_Off   = -2.5     ' -(4 * 0.625)
+Const Q_Mult     = 6.25     ' 100 L/min / 16 mA
+Const Q_Off      = -25.0    ' -(4 * 6.25)
+Const Nivel_Mult = 0.3125   ' 5 m / 16 mA
+Const Nivel_Off  = -1.25    ' -(4 * 0.3125)
+Const Niv_Bajo   = 1.0      ' umbral alarma nivel bajo (m)
+Const Niv_Alto   = 4.2      ' umbral bomba apagado (m)
+
+'-- Variables de hardware — 4-20mA (asignación auto A0, A1, A2) --
+Public AI1_mA, AI2_mA, AI3_mA
+Units AI1_mA = mA
+Units AI2_mA = mA
+Units AI3_mA = mA
+
+'-- Variables de hardware — voltaje ------------------------------
+Public Temp
+Public BattV
+
+'-- Variables derivadas (calculadas, sin canal propio) -----------
+Public Presion, Caudal, Nivel, Alarma, Bomba_DO1
+
+'==============================================================
+'  DEFINICIÓN DE TABLAS (fuera del Scan, antes de BeginProg)
+'==============================================================
+
+'-- Tabla 1: promedios cada 5 minutos (1440 registros = 5 días) --
+DataTable(Minutos, True, 1440)
+    DataInterval(0, 5, Min, 0)
+    Average(1,  Presion, FP2, False)
+    Average(1,  Caudal,  FP2, False)
+    Average(1,  Nivel,   FP2, False)
+    Average(1,  Temp,    FP2, False)
+    Sample(1,   BattV,   FP2)
+    Sample(1,   Alarma,  FP2)
+    Sample(1,   Bomba_DO1, FP2)
+EndTable
+
+'-- Tabla 2: min/max diarios (365 registros = 1 año) ------------
+DataTable(Diario, True, 365)
+    DataInterval(0, 1440, Min, 0)
+    Maximum(1, Presion, FP2, False, True)
+    Minimum(1, Presion, FP2, False, True)
+    Maximum(1, Caudal,  FP2, False, True)
+    Minimum(1, Caudal,  FP2, False, True)
+    Maximum(1, Nivel,   FP2, False, True)
+    Minimum(1, Nivel,   FP2, False, True)
+    Maximum(1, Temp,    FP2, False, True)
+    Minimum(1, Temp,    FP2, False, True)
+EndTable
+
+'==============================================================
+'  PROGRAMA PRINCIPAL
+'==============================================================
+
+BeginProg
+    Scan(10, Sec, 0, 0)
+
+        '-- Mediciones de hardware ----------------------------------
+        VoltSE(Temp, 1, mV5000, 1, 1, 0, _60Hz, 0.1, 0.0)
+        Battery(BattV)
+        PortSet(Bomba_DO1, 0)
+
+        '-- Conversión 4-20mA a unidades de ingeniería --------------
+        Presion = AI1_mA * Pres_Mult + Pres_Off
+        Caudal  = AI2_mA * Q_Mult    + Q_Off
+        Nivel   = AI3_mA * Nivel_Mult + Nivel_Off
+
+        '-- Alarma de nivel bajo (1 = alarma activa) ----------------
+        If (Nivel < Niv_Bajo) Then Alarma = 1
+        If (Nivel >= Niv_Bajo) Then Alarma = 0
+
+        '-- Control lógico de bomba ---------------------------------
+        If (Nivel < Niv_Bajo) Then Bomba_DO1 = 1
+        If (Nivel > Niv_Alto) Then Bomba_DO1 = 0
+
+        '-- Llamar tablas para archivar datos -----------------------
+        CallTable Minutos
+        CallTable Diario
+
+    NextScan
+EndProg
