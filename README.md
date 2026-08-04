@@ -46,6 +46,47 @@ python cli.py ejemplos/programa_compuerta.CR1 --recursos --hardware --hlog
 python -m pytest tests -q
 ```
 
+## Asistente de sensores (Ctrl+M)
+
+Sacar `Mult` y `Offset` a mano es donde más se equivoca quien arma la
+estación, y el error no se nota: el equipo reporta números perfectamente
+plausibles que están mal. El asistente los calcula, revisa que la
+instalación sea eléctricamente viable y deja el código escrito.
+
+**Sensores 4-20 mA.** Se cargan el rango del sensor y la resistencia que
+está puesta en el gabinete. Ahí aparece el problema que el asistente
+existe para resolver: **el firmware tiene el shunt fijo en 270 Ω por
+código** (`SHUNT_OHM`, OptaPakBus.ino:1168). Con la resistencia estándar
+de 250 Ω, un lazo a 20 mA reales se lee como 18,52 mA. El valor de
+ingeniería se puede corregir metiendo el factor en `Mult`, pero los
+umbrales de falla no: quien copie el clásico `If (Sensor_mA < 3.5)` está
+comparando contra un número que ya no significa 3,5 mA. El asistente
+genera los umbrales corregidos.
+
+También avisa de lo que no se puede arreglar con matemática: a 20 mA
+sobre 600 Ω son 12 V y la entrada llega a 10,70 V, así que la lectura se
+corta arriba y el sensor nunca marca el máximo. Y muestra la resolución
+real que se consigue, en unidades de ingeniería por cuenta de ADC.
+
+Alternativa exacta: leer con `VoltSE` en vez de `Units = mA`. Ahí la
+resistencia entra en el cálculo de forma exacta y no importa el valor que
+el firmware traiga fijo. El asistente lo ofrece con una casilla.
+
+**Contadores de pulsos.** El firmware tiene un antirrebote de 50 ms fijo
+(`PULSE_DEBOUNCE_US`, OptaPakBus.ino:433), pensado para el contacto de un
+pluviómetro. Eso pone un techo de **20 pulsos por segundo**. Se cargan los
+pulsos por unidad y el máximo que se espera medir, y el asistente dice si
+entra: un caudalímetro de 450 pulsos/litro a 30 l/min necesita 225 Hz y no
+sirve — con ese medidor el equipo solo puede leer hasta 2,67 l/min, todo
+lo demás se cuenta de menos sin ningún aviso.
+
+Además fuerza `Offset = 0`, porque se suma en **cada scan**: con
+`Totalize` en la tabla, cualquier otro valor acumula un total que nunca
+ocurrió.
+
+El código que genera pasa el propio linter con cero errores, y eso está
+verificado en las pruebas.
+
 ## Ayuda mientras se escribe
 
 El lenguaje lo escribe gente que instala sensores, no programadores, así
@@ -99,6 +140,9 @@ Todas verificadas contra `OptaPakBus.ino`; entre paréntesis, la línea.
 | **`att` en el nombre + `Units=mA` pierde el A7** | la rama de batería excluye `is4_20mA` (2924) |
 | **`VoltDiff`/`VoltSE` con menos de 6 argumentos ignora Mult/Offset** | (2732) |
 | **Tabla sin `DataInterval` nunca archiva** | `if (tbl->intervalSec > 0)` (3168) |
+| **`PulseCount` no cuenta más de 20 pulsos/s** | antirrebote de 50 ms fijo (433); un caudalímetro de turbina se cuenta muy por debajo de lo real |
+| **El `Offset` de `PulseCount` se suma en cada scan** | `value = cnt * mult + offset` (3060); con `Totalize` inventa un acumulado |
+| **El shunt de 4-20 mA está fijo en 270 Ω** | `SHUNT_OHM` (1168); con otra resistencia la variable en mA no muestra los miliamperes reales |
 | **`Public`/`Dim`/`Units` con sangría** | offsets fijos desde la columna 0 (2598, 2631). `Const` sí tolera sangría (2510) |
 | **Truncados silenciosos** | línea a 127 caracteres, programa a 8192 bytes, argumento a 31, nombre de variable a 23 |
 
@@ -121,6 +165,7 @@ optabasic/       motor de análisis, sin dependencias de interfaz
   cutil.py       atof/atoi/strncpy con la semántica de C
   lexer.py       cr_strip_comment, cr_keyword, cr_paren, cr_args
   reference.py   catalogo de instrucciones en castellano llano
+  sensors.py     escalas de 4-20 mA y de pulsos, con la matematica del firmware
   expr.py        cr_compile_expr (Shunting-Yard) y el conteo de tokens RPN
   parser.py      parse_crbasic() completo
   lint.py        las reglas propias del IDE
@@ -128,7 +173,7 @@ optabasic/       motor de análisis, sin dependencias de interfaz
   encoding.py    cp1252 / UTF-8 y fin de línea, sin corromper acentos
 gui/             interfaz PyQt5
 cli.py           linter de consola
-tests/           55 pruebas ancladas al firmware
+tests/           87 pruebas ancladas al firmware
 ejemplos/        los .CR1 reales del repo del firmware
 ```
 

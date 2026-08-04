@@ -311,15 +311,25 @@ CATALOGO: "list[Instr]" = [
             Param("Config", "Tipo de entrada del CR1000.", ignorado=True),
             Param("Opcion", "Opción de conteo del CR1000.", ignorado=True),
             Param("Mult", "Cuánto vale cada pulso. Un pluviómetro de 0,2 mm por volcada lleva 0.2."),
-            Param("Offset", "Se suma al final. Casi siempre 0."),
+            Param("Offset", "Se suma en CADA scan, así que acá va 0 salvo que sepas muy bien lo que hacés."),
         ],
         ejemplo="Public Lluvia_mm\nPulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)",
         trampa=(
-            "Necesita una resistencia pull-up EXTERNA de 10 kΩ a 3,3 V: el "
+            "No cuenta más de 20 pulsos por segundo. El firmware tiene un "
+            "antirrebote fijo de 50 ms, pensado para el contacto de un "
+            "pluviómetro; un caudalímetro de turbina, que suele dar cientos de "
+            "pulsos por segundo, se cuenta muy por debajo de lo real y sin "
+            "ningún aviso. El asistente de sensores (Ctrl+M) hace esa "
+            "verificación con los datos del sensor.\n\n"
+            "Necesita una resistencia de 10 kΩ a 3,3 V puesta AFUERA: el "
             "pull-up interno no llega al borne por el divisor de entrada del "
-            "Opta. Además el canal de pulsos no queda reservado, así que puede "
-            "chocar con un sensor analógico en el mismo borne. Si el canal que "
-            "escribís no es válido, el equipo usa el P1 sin avisar."
+            "Opta. Sin esa resistencia no cuenta nada.\n\n"
+            "El Offset se suma en cada scan, no una sola vez. Con Totalize en "
+            "la tabla, un Offset distinto de 0 acumula un total que nunca "
+            "ocurrió.\n\n"
+            "El canal de pulsos no queda reservado, así que puede chocar con un "
+            "sensor analógico en el mismo borne. Y si el canal que escribís no "
+            "es válido, el equipo usa el P1 sin avisar."
         ),
     ),
 

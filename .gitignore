@@ -21,6 +21,11 @@ dist/
 .idea/
 *.swp
 
+# Programas de prueba sueltos en la raiz. Los .CR1 que son parte del
+# proyecto van en ejemplos/, que si se versiona.
+/*.CR1
+/*.cr1
+
 # Sistema
 Thumbs.db
 desktop.ini

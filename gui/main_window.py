@@ -30,6 +30,7 @@ from .editor import EditorCRBasic
 from .highlighter import Paleta
 from .panels import PanelHardware, PanelHlog, PanelProblemas, PanelRecursos
 from .reference_panel import PanelReferencia
+from .sensor_wizard import AsistenteSensor
 from .snippets import PLANTILLAS, PROGRAMA_NUEVO
 
 RETARDO_ANALISIS_MS = 350
@@ -128,6 +129,10 @@ class VentanaPrincipal(QMainWindow):
         editar.addAction(self._accion("Autocompletar", self._forzar_completado, "Ctrl+Space"))
 
         insertar = barra.addMenu("&Insertar")
+        insertar.addAction(self._accion(
+            "&Asistente de sensores…", self.abrir_asistente, "Ctrl+M",
+            "Calcula Mult y Offset de un sensor 4-20 mA o de un contador de pulsos"))
+        insertar.addSeparator()
         for titulo, cuerpo in PLANTILLAS:
             if titulo is None:
                 insertar.addSeparator()
@@ -341,6 +346,34 @@ class VentanaPrincipal(QMainWindow):
             total = arriba + abajo
             objetivo = min(460, int(total * 0.62))
             self.divisor.setSizes([total - objetivo, objetivo])
+
+    def abrir_asistente(self):
+        """Ofrece los bornes que todavía están libres en el programa actual."""
+        ocupados = set()
+        for v in self.resultado.program.vars:
+            if v.pin >= 0:
+                ocupados.add(v.pin + 1)
+            if v.is_pulse_count and v.pulse_pin >= 0:
+                ocupados.add(v.pulse_pin + 1)
+        libres = [c for c in range(1, L.N_ANALOG + 1) if c not in ocupados]
+
+        dialogo = AsistenteSensor(
+            canales_libres=libres,
+            scan_seg=self.resultado.program.scan_seconds,
+            parent=self,
+        )
+        dialogo.insertar.connect(self._insertar_bloque)
+        dialogo.exec_()
+
+    def _insertar_bloque(self, texto: str):
+        """Inserta el código del asistente al principio de una línea nueva."""
+        cursor = self.editor.textCursor()
+        cursor.movePosition(cursor.EndOfBlock)
+        prefijo = "" if not cursor.block().text().strip() else "\n"
+        cursor.insertText(prefijo + "\n" + texto)
+        self.editor.setTextCursor(cursor)
+        self.editor.setFocus()
+        self.analizar()
 
     def abrir_referencia(self):
         self.tabs.setCurrentIndex(self.IDX_REFERENCIA)

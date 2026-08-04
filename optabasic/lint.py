@@ -420,24 +420,54 @@ def _hardware(result: ParseResult) -> None:
     # Colisiones de canal. used[] arranca en false y NUNCA se marca para los
     # canales explícitos ni para los de PulseCount (OptaPakBus.ino:2920),
     # así que un canal pedido a mano se puede volver a repartir.
-    ocupantes: "dict[int, list[tuple[str, str, int]]]" = {}
-    for v in prog.vars:
+    # Un mismo canal leído por dos variables que lo piden a mano es legítimo
+    # (por ejemplo el valor en mA y el mismo lazo escalado). Lo que no puede
+    # ser deliberado es que el reparto automático caiga encima de uno fijado
+    # a mano, ni que un canal de pulsos comparta borne con uno analógico.
+    ocupantes: "dict[int, list[tuple[str, str, int, bool]]]" = {}
+    for i, v in enumerate(prog.vars):
         if v.pin >= 0:
-            ocupantes.setdefault(v.pin, []).append((v.name, "analógico", v.decl_line))
+            explicito = i in result.explicit_pins
+            ocupantes.setdefault(v.pin, []).append(
+                (v.name, "analógico", v.decl_line, explicito))
         if v.is_pulse_count and v.pulse_pin >= 0:
-            ocupantes.setdefault(v.pulse_pin, []).append((v.name, "pulsos", v.decl_line))
+            ocupantes.setdefault(v.pulse_pin, []).append(
+                (v.name, "pulsos", v.decl_line, True))
+
     for canal, lista in sorted(ocupantes.items()):
         if len(lista) < 2:
             continue
-        detalle = ", ".join(f"«{n}» ({t})" for n, t, _ in lista)
-        diags.error(
-            lista[-1][2],
-            f"Colisión en el canal A{canal}: {detalle} lo usan a la vez. El equipo no "
-            "reserva los canales pedidos explícitamente ni los de PulseCount, así que "
-            "la asignación automática los vuelve a repartir. Fijá los canales a mano "
-            "con AIChannel para todas las variables involucradas.",
-            code="colision-canal",
-        )
+        detalle = ", ".join(f"«{n}» ({t})" for n, t, _, _ in lista)
+        hay_pulsos = any(t == "pulsos" for _, t, _, _ in lista)
+        automaticos = [n for n, t, _, e in lista if t == "analógico" and not e]
+
+        if hay_pulsos:
+            diags.error(
+                lista[-1][2],
+                f"El canal A{canal} lo usan a la vez {detalle}. Un borne no puede "
+                "contar pulsos y medir una señal analógica al mismo tiempo: el "
+                "equipo no reserva los canales de PulseCount, así que hay que "
+                "correr uno de los dos.",
+                code="colision-canal",
+            )
+        elif automaticos:
+            diags.error(
+                lista[-1][2],
+                f"Colisión en el canal A{canal}: {detalle} lo usan a la vez. Fijar "
+                "un canal a mano NO lo reserva, y el reparto automático se lo volvió "
+                f"a entregar a {', '.join('«' + n + '»' for n in automaticos)}. "
+                "Asignale el canal a mano con AIChannel a todas las variables que "
+                "lean hardware.",
+                code="colision-canal",
+            )
+        else:
+            diags.info(
+                lista[-1][2],
+                f"{detalle} leen las dos el canal A{canal}. Está bien si es a "
+                "propósito —por ejemplo el lazo en mA y el mismo valor escalado—, "
+                "porque las dos piden ese canal explícitamente.",
+                code="canal-compartido",
+            )
 
     for v in prog.vars:
         # El truco «att» exige que la variable NO sea mA ni VoltDiff
