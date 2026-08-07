@@ -7,7 +7,7 @@ al equipo.
 ## El problema que resuelve
 
 Las estaciones Opta se programan con un archivo de texto `.CR1`, en un
-lenguaje parecido al de los dataloggers Campbell. El equipo es muy
+lenguaje parecido al de los dataloggers CR1000. El equipo es muy
 tolerante: si una línea no la entiende, la saltea y sigue andando como si
 nada.
 
