@@ -98,11 +98,30 @@ se cuenta de menos sin ningún aviso. Para los equipos que se usan en
 terreno sobra: un pluviómetro de cangilones va a 0,8 Hz y un flujómetro
 Bermad DN125 a caudal máximo, a 0,5 Hz.
 
-El código que genera incluye el montaje completo: `ExciteCh` en un borne
-para alimentar el contacto con 3,3 V, el conteo en otro con pull-down de
-10 kΩ al negativo, y `PulseEdge(..., Rising)` que es el flanco que
-corresponde a esa topología. Sin la excitación el contacto no tiene fuente
-y no genera ningún pulso.
+**El divisor de entrada.** El contacto se alimenta desde la fuente del
+gabinete:
+
+```
++12 V ── 2,2 kΩ ── [contacto] ── I4 ── 10 kΩ ── NEGATIVO
+```
+
+Acá está el segundo error que el asistente evita: **la entrada del Opta
+presenta unos 7,8 kΩ a masa y queda en paralelo con la resistencia de
+abajo**. Un divisor de 10 kΩ/10 kΩ desde 12 V parece dar 6 V y en realidad
+da 3,66. Y como el borne tiene que llegar a unos 7,4 V para que la
+interrupción dispare —10,70 V a fondo de escala contra los 3,3 V del
+micro—, con ese divisor no cuenta **ni un solo pulso**.
+
+El asistente calcula la tensión real del borne, avisa si no llega al
+umbral o si se pasa de los 10,70 V que admite la entrada, y da algo que a
+mano no se mira: **hasta cuánto puede caer la fuente antes de que deje de
+contar**. Con 2,2 kΩ el corte está en 11,3 V, que en una estación a
+batería se alcanza; con 1,5 kΩ baja a 10,1 V.
+
+`ExciteCh` queda como opción para cuando no hay fuente en el gabinete,
+pero con una advertencia: entrega sus 3,3 V a través de la red divisora de
+la entrada, con impedancia de fuente alta, y difícilmente cruce el umbral.
+Conviene medir el nodo con el circuito armado.
 
 Además fuerza `Offset = 0`, porque se suma en **cada scan**: con
 `Totalize` en la tabla, cualquier otro valor acumula un total que nunca
@@ -167,6 +186,7 @@ Todas verificadas contra `OptaPakBus.ino` 1.6.12.
 | **`PulseCount` no cuenta más de 20 pulsos/s** | antirrebote de 50 ms fijo; un caudalímetro de turbina se cuenta muy por debajo de lo real |
 | **El `Offset` de `PulseCount` se suma en cada scan** | `value = cnt * mult + offset`; con `Totalize` inventa un acumulado |
 | **`ExciteCh` sobre el borne de conteo** | la salida gana y el contador no ve ningún flanco |
+| **El divisor del contador se calcula sin la entrada en paralelo** | los ~7,8 kΩ de la entrada bajan la tensión del borne; un 10k/10k desde 12 V da 3,66 V y no 6, y así no dispara nunca |
 | **El shunt de 4-20 mA está fijo en 260 Ω** | `SHUNT_OHM`; con otro lazo la variable en mA no muestra los miliamperes reales |
 | **`Public`/`Dim`/`Units` con sangría** | offsets fijos desde la columna 0. `Const` sí tolera sangría |
 | **Truncados silenciosos** | línea a 127 caracteres, programa a 16384 bytes, argumento a 31, nombre de variable a 23 |

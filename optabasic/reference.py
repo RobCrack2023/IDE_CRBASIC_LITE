@@ -321,12 +321,17 @@ CATALOGO: "list[Instr]" = [
             "pulsos por segundo, se cuenta muy por debajo de lo real y sin "
             "ningún aviso. El asistente de sensores (Ctrl+M) hace esa "
             "verificación con los datos del sensor.\n\n"
-            "El contacto necesita alimentación: un borne declarado con "
-            "ExciteCh lo excita con 3,3 V, y el borne de conteo lleva un "
-            "pull-down de 10 kΩ al negativo. Sin la excitación no hay fuente "
-            "y no se genera ningún pulso.\n\n"
-            "El flanco por defecto es de subida (Rising), que es el que "
-            "corresponde a ese montaje. Se cambia con PulseEdge.\n\n"
+            "El contacto necesita alimentación y referencia. Lo habitual es "
+            "tomarla de la fuente del gabinete con un divisor:\n\n"
+            "    +12 V ── 2,2 kΩ ── [contacto] ── borne ── 10 kΩ ── NEGATIVO\n\n"
+            "Con el contacto cerrado el borne queda cerca de 8 V y abierto en "
+            "0 V, así que el pulso llega como flanco de subida, que es el que "
+            "el equipo cuenta por defecto.\n\n"
+            "Ojo con dimensionar el divisor a ojo: la entrada del Opta "
+            "presenta unos 7,8 kΩ a masa y queda en paralelo con la "
+            "resistencia de abajo. Un divisor de 10 kΩ/10 kΩ desde 12 V "
+            "parece dar 6 V y en realidad da 3,66, que no alcanza para que el "
+            "contador dispare. El asistente de sensores hace esa cuenta.\n\n"
             "El Offset se suma en cada scan, no una sola vez. Con Totalize en "
             "la tabla, un Offset distinto de 0 acumula un total que nunca "
             "ocurrió.\n\n"
@@ -703,26 +708,28 @@ CATALOGO: "list[Instr]" = [
     Instr(
         nombre="ExciteCh",
         firma="ExciteCh(Canal)",
-        resumen="Pone un borne como salida en 3,3 V para alimentar un contacto",
+        resumen="Alimenta un contacto desde el propio Opta, cuando no hay fuente",
         categoria="Entradas",
         detalle=(
             "Convierte un borne de entrada en una salida fija en alto, de unos "
-            "3,3 V. Sirve como fuente para el contacto seco de un sensor de "
-            "pulsos: sin esa alimentación el contacto no tiene de dónde sacar "
-            "tensión y no genera ningún pulso.\n\n"
-            "El montaje completo es: este borne excita el contacto, y el borne "
-            "de conteo lleva un pull-down de 10 kΩ al negativo. En reposo el "
-            "nodo de conteo queda en 0 V y cada cierre del contacto lo sube, "
-            "así que el pulso llega como flanco de subida.\n\n"
+            "3,3 V, para usarla como fuente del contacto de un sensor de "
+            "pulsos.\n\n"
+            "**Solo hace falta si no hay una fuente en el gabinete.** Lo normal "
+            "es alimentar el contacto desde los 12 V con un divisor —ver "
+            "PulseCount—, y en ese caso esta instrucción no va.\n\n"
             "El canal queda reservado y no se lo reparte a ninguna medición. Es "
             "una instrucción propia del Opta, no existe en un CR1000."
         ),
         parametros=[Param("Canal", "El borne que pasa a ser salida, de 1 a 8.")],
         ejemplo="ExciteCh(2)\nPulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)",
         trampa=(
-            "No pongas la excitación en el mismo borne que el conteo: la salida "
-            "gana y el contador no ve ningún flanco. Y ese borne deja de servir "
-            "para medir: queda forzado a 3,3 V."
+            "Esos 3,3 V salen a través de la red divisora de la entrada, con "
+            "impedancia de fuente alta, y el contador necesita alrededor de "
+            "7,4 V en el borne para disparar. Con un pull-down colgando puede "
+            "no llegar nunca. Medilo con el circuito armado antes de darlo por "
+            "bueno; si no llega, alimentá el contacto desde la fuente.\n\n"
+            "Tampoco pongas la excitación en el mismo borne que el conteo: la "
+            "salida gana y el contador no ve ningún flanco."
         ),
     ),
     Instr(

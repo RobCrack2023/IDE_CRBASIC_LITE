@@ -36,6 +36,49 @@ ZIN = 7800.0
 DEBOUNCE_MS = 50.0
 TASA_MAX_HZ = 1000.0 / DEBOUNCE_MS          #: 20 pulsos por segundo
 
+#: Relación entre la tensión del borne y la que ve el pin del micro. Sale
+#: de que 10.70 V a fondo de escala son los 3.3 V del ADC.
+RELACION_ENTRADA = 3.3 / VREF
+
+#: Tensión que hay que tener EN EL BORNE para que el pin lea nivel alto y
+#: dispare la interrupción del contador. El micro necesita unos 0,7 × 3,3 V
+#: = 2,3 V, que a través de la red divisora de la entrada son ~7,4 V en el
+#: terminal. Conviene confirmarlo con un multímetro sobre el circuito
+#: armado: es un valor deducido, no una hoja de datos del Opta.
+V_UMBRAL_ALTO = 0.7 * 3.3 / RELACION_ENTRADA
+
+#: Y por debajo de esto el pin lee nivel bajo con seguridad.
+V_UMBRAL_BAJO = 0.3 * 3.3 / RELACION_ENTRADA
+
+
+@dataclass
+class Divisor:
+    """Cómo queda el borne de conteo con un contacto seco y una fuente."""
+
+    v_cerrado: float          #: tensión en el borne con el contacto cerrado
+    v_abierto: float          #: con el contacto abierto
+    corriente_ma: float       #: la que circula por el contacto al cerrarse
+    v_fuente_minima: float    #: por debajo de esto deja de contar
+    r_paralelo: float         #: la de abajo en paralelo con la entrada
+
+
+def calcular_divisor_pulsos(v_fuente: float = 12.0, r_arriba: float = 2200.0,
+                            r_abajo: float = 10000.0) -> Divisor:
+    """Analiza el montaje  +V ─ R_arriba ─ [contacto] ─ borne ─ R_abajo ─ NEG.
+
+    La resistencia de abajo queda en PARALELO con la entrada del Opta, que
+    presenta unos 7,8 kΩ a masa. Ignorar eso es el error clásico: un
+    divisor de 10k/10k desde 12 V parece dar 6 V y en realidad da 3,66,
+    que no alcanza para que el contador dispare.
+    """
+    rp = r_abajo * ZIN / (r_abajo + ZIN) if r_abajo > 0 else ZIN
+    v_cerrado = v_fuente * rp / (r_arriba + rp) if (r_arriba + rp) else 0.0
+    corriente = (v_fuente - v_cerrado) / r_arriba * 1000.0 if r_arriba else 0.0
+    # Cuánto puede caer la fuente antes de que el borne no llegue al umbral.
+    factor = rp / (r_arriba + rp) if (r_arriba + rp) else 0.0
+    v_min = V_UMBRAL_ALTO / factor if factor else float("inf")
+    return Divisor(v_cerrado, 0.0, corriente, v_min, rp)
+
 
 def shunt_efectivo(resistor_fisico: float) -> float:
     """El shunt real que ve el lazo: el resistor en paralelo con la entrada.
@@ -274,6 +317,10 @@ def calcular_pulsos(
     caudal_max: float = 0.0,
     por_segundo: bool = False,
     scan_seg: float = 10.0,
+    alimentacion: str = "externa",
+    v_fuente: float = 12.0,
+    r_arriba: float = 2200.0,
+    r_abajo: float = 10000.0,
     canal_excitacion: int = 0,
 ) -> Escala:
     """Calcula Mult para un contador de pulsos y revisa que sea viable.
@@ -340,16 +387,73 @@ def calcular_pulsos(
                 "de lo previsto.",
             )
 
-    # ── Advertencias que valen siempre ──────────────────────────────────
-    esc.avisar(
-        AVISO,
-        f"El contacto necesita alimentación y referencia: un canal declarado con "
-        f"ExciteCh({canal_excitacion}) queda en ~3,3 V y excita el contacto, y el "
-        f"borne de conteo lleva un pull-down de 10 kΩ al NEGATIVO. En reposo el nodo "
-        f"está en 0 V y cada pulso lo sube, así que el flanco es de subida (RISING, "
-        f"que es el que el equipo usa por defecto). Sin la excitación no hay fuente y "
-        f"no se genera ningún pulso.",
-    )
+    # ── El circuito de entrada ──────────────────────────────────────────
+    div = None
+    if alimentacion == "externa":
+        div = calcular_divisor_pulsos(v_fuente, r_arriba, r_abajo)
+        esc.datos.append((
+            "Tensión en el borne",
+            f"{div.v_cerrado:.2f} V con el contacto cerrado, "
+            f"{div.v_abierto:.2f} V abierto",
+        ))
+        esc.datos.append((
+            "Corriente por el contacto",
+            f"{div.corriente_ma:.2f} mA al cerrarse",
+        ))
+
+        if div.v_cerrado > VREF:
+            esc.avisar(
+                ERROR,
+                f"Con el contacto cerrado el borne llega a {div.v_cerrado:.2f} V y la "
+                f"entrada del Opta admite hasta {VREF:g} V. Subí la resistencia de "
+                f"arriba o bajá la de abajo.",
+            )
+        elif div.v_cerrado < V_UMBRAL_ALTO:
+            esc.avisar(
+                ERROR,
+                f"Con el contacto cerrado el borne llega apenas a {div.v_cerrado:.2f} V "
+                f"y hacen falta unos {V_UMBRAL_ALTO:.1f} V para que el contador "
+                f"dispare: así no cuenta ningún pulso. Ojo con la cuenta a mano: la "
+                f"resistencia de abajo queda en paralelo con los "
+                f"{ZIN / 1000:g} kΩ de la entrada, así que las dos juntas dan "
+                f"{div.r_paralelo:.0f} Ω y no {r_abajo:g}. Bajá la resistencia de "
+                f"arriba (con {r_abajo / 1000:g} kΩ abajo, 1.5 kΩ deja el borne "
+                f"holgado).",
+            )
+        else:
+            margen = (v_fuente - div.v_fuente_minima) / v_fuente * 100.0
+            if div.v_fuente_minima > v_fuente * 0.92:
+                esc.avisar(
+                    AVISO,
+                    f"El borne queda en {div.v_cerrado:.2f} V, arriba del umbral pero "
+                    f"con poco margen: si la fuente baja de {div.v_fuente_minima:.1f} V "
+                    f"el contador deja de contar. En una estación a batería eso pasa. "
+                    f"Con 1.5 kΩ arriba en vez de {r_arriba / 1000:g} kΩ aguanta hasta "
+                    f"{calcular_divisor_pulsos(v_fuente, 1500.0, r_abajo).v_fuente_minima:.1f} V.",
+                )
+            else:
+                esc.avisar(
+                    NOTA,
+                    f"El borne queda en {div.v_cerrado:.2f} V, con margen: el contador "
+                    f"sigue funcionando mientras la fuente no baje de "
+                    f"{div.v_fuente_minima:.1f} V ({margen:.0f}% por debajo de los "
+                    f"{v_fuente:g} V nominales).",
+                )
+        esc.avisar(
+            NOTA,
+            "Con el contacto abierto la resistencia de abajo deja el borne en 0 V, así "
+            "que el pulso llega como flanco de subida: es el que el equipo cuenta por "
+            "defecto y no hace falta escribir PulseEdge.",
+        )
+    else:
+        esc.avisar(
+            AVISO,
+            f"ExciteCh({canal_excitacion}) entrega sus ~3,3 V a través de la red "
+            f"divisora de la entrada, con impedancia de fuente alta, y el contador "
+            f"necesita unos {V_UMBRAL_ALTO:.1f} V en el borne para disparar. Medí el "
+            f"nodo con el circuito armado antes de darlo por bueno: si no llega, "
+            f"alimentá el contacto desde la fuente de {v_fuente:g} V con un divisor.",
+        )
     esc.avisar(
         AVISO,
         f"El contador se pone en cero en cada scan, así que «{nombre}» tiene los "
@@ -364,26 +468,47 @@ def calcular_pulsos(
     )
     esc.avisar(
         NOTA,
-        f"El canal de pulsos comparte los bornes con las entradas analógicas y el "
-        f"equipo no lo reserva. Si además usás sensores analógicos, asignales el "
-        f"canal a mano con AIChannel para que ninguno caiga en A{canal - 1}.",
+        f"El borne I{canal} queda reservado para el conteo: el equipo no se lo va a "
+        f"repartir a ninguna variable de medición.",
     )
 
-    esc.codigo = "\n".join([
-        f"'-- Contador de pulsos {nombre}: {detalle}",
-        f"'   Conteo en P{canal}, con pull-down de 10k al NEGATIVO.",
-        f"'   La excitacion de I{canal_excitacion} alimenta el contacto (~3.3 V):",
-        f"'   en reposo el nodo esta en 0 V y cada pulso lo sube (flanco RISING).",
-        f"'   Tope del equipo: {TASA_MAX_HZ:g} pulsos/s por el antirrebote de "
-        f"{DEBOUNCE_MS:g} ms.",
-        f"Public {nombre}",
-        f"Units {nombre} = {unidad}" if unidad else "",
-        f"ExciteCh({canal_excitacion})",
-        f"PulseCount({nombre}, 1, P{canal}, 2, 0, {_num(mult, 8)}, 0.0)",
-        f"PulseEdge({nombre}, Rising)",
-        "",
-        "' En la tabla, acumulado del periodo:",
-        f"'     Totalize(1, {nombre}, FP2)",
-        "",
-    ])
+    if alimentacion == "externa":
+        cableado = [
+            f"'   Cableado:  +{v_fuente:g}V -- {_ohm(r_arriba)} -- [contacto] -- "
+            f"I{canal} -- {_ohm(r_abajo)} -- NEGATIVO",
+            f"'   Con el contacto cerrado el borne queda en {div.v_cerrado:.2f} V y "
+            f"abierto en 0 V,",
+            f"'   asi que el pulso llega como flanco de subida (el que cuenta por "
+            f"defecto).",
+        ]
+        excitacion = []
+    else:
+        cableado = [
+            f"'   El contacto se alimenta desde I{canal_excitacion} (ExciteCh) y el",
+            f"'   borne de conteo lleva un pull-down de 10k al NEGATIVO.",
+        ]
+        excitacion = [f"ExciteCh({canal_excitacion})"]
+
+    esc.codigo = "\n".join(
+        [f"'-- Contador de pulsos {nombre}: {detalle}"]
+        + cableado
+        + [
+            f"'   Tope del equipo: {TASA_MAX_HZ:g} pulsos/s por el antirrebote de "
+            f"{DEBOUNCE_MS:g} ms.",
+            f"Public {nombre}",
+            f"Units {nombre} = {unidad}" if unidad else "",
+        ]
+        + excitacion
+        + [
+            f"PulseCount({nombre}, 1, P{canal}, 2, 0, {_num(mult, 8)}, 0.0)",
+            "",
+            "' En la tabla, acumulado del periodo:",
+            f"'     Totalize(1, {nombre}, FP2)",
+            "",
+        ]
+    )
     return esc
+
+
+def _ohm(valor: float) -> str:
+    return f"{valor / 1000:g}k" if valor >= 1000 else f"{valor:g} ohm"

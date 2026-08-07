@@ -17,9 +17,11 @@ from optabasic.sensors import (  # noqa: E402
     ERROR,
     SHUNT_NOMINAL,
     TASA_MAX_HZ,
+    V_UMBRAL_ALTO,
     VREF,
     ZIN,
     calcular_4_20,
+    calcular_divisor_pulsos,
     calcular_pulsos,
     shunt_efectivo,
 )
@@ -226,11 +228,11 @@ def test_el_offset_de_pulsos_siempre_es_cero():
     assert ", 0.0)" in e.codigo
 
 
-def test_avisa_de_totalize_y_del_pull_up():
+def test_avisa_de_totalize_y_del_flanco():
     e = calcular_pulsos("Lluvia_mm", unidad_por_pulso=0.2, unidad="mm")
     textos = " ".join(t for _, t in e.avisos)
     assert "Totalize" in textos
-    assert "10 kΩ" in textos
+    assert "flanco de subida" in textos
 
 
 def test_el_codigo_de_pulsos_pasa_el_linter():
@@ -282,9 +284,73 @@ def test_excitacion_encima_de_una_medicion_es_error():
     assert "excitacion-y-medicion" in codigos(analyze(fuente))
 
 
-def test_el_codigo_de_pulsos_declara_la_excitacion():
-    """El montaje real necesita ExciteCh: sin fuente no hay pulsos."""
-    e = calcular_pulsos("Lluvia_mm", canal=1, unidad_por_pulso=0.2, unidad="mm")
-    assert "ExciteCh(" in e.codigo
-    assert "PulseEdge(Lluvia_mm, Rising)" in e.codigo
-    assert "ExciteCh(1)" not in e.codigo      # nunca en el mismo borne del conteo
+# ── El circuito de entrada del contador ──────────────────────────────────
+def test_divisor_del_caudalimetro_real():
+    """El montaje de terreno: +12V ─ 2.2k ─ [reed] ─ I4 ─ 10k ─ NEGATIVO."""
+    d = calcular_divisor_pulsos(12.0, 2200.0, 10000.0)
+    assert d.r_paralelo == pytest.approx(4382, abs=5)
+    assert d.v_cerrado == pytest.approx(7.99, abs=0.05)
+    assert d.corriente_ma == pytest.approx(1.82, abs=0.05)
+    assert d.v_cerrado > V_UMBRAL_ALTO          # dispara
+    assert d.v_cerrado < VREF                   # sin saturar la entrada
+
+
+def test_la_entrada_carga_el_divisor():
+    """Un 10k/10k desde 12 V no da 6 V sino 3,66: la entrada del Opta
+    queda en paralelo con la resistencia de abajo."""
+    d = calcular_divisor_pulsos(12.0, 10000.0, 10000.0)
+    assert d.v_cerrado == pytest.approx(3.66, abs=0.05)
+    assert d.v_cerrado < V_UMBRAL_ALTO          # no llega a disparar nunca
+
+
+def test_divisor_que_no_llega_al_umbral_es_error():
+    e = calcular_pulsos("Caudal", canal=4, unidad_por_pulso=0.1, unidad="m3",
+                        r_arriba=10000.0, r_abajo=10000.0)
+    assert e.hay_errores
+    assert any("no cuenta ningún pulso" in t for _, t in e.avisos)
+
+
+def test_divisor_que_satura_la_entrada_es_error():
+    e = calcular_pulsos("Caudal", canal=4, unidad_por_pulso=0.1, unidad="m3",
+                        v_fuente=24.0, r_arriba=470.0, r_abajo=10000.0)
+    assert e.hay_errores
+
+
+def test_margen_de_caida_de_la_fuente():
+    """Con 2.2k el contador se corta si la fuente baja de ~11,1 V; con
+    1.5k aguanta hasta ~9,9 V, que en una estación a batería importa."""
+    ajustado = calcular_divisor_pulsos(12.0, 2200.0, 10000.0)
+    holgado = calcular_divisor_pulsos(12.0, 1500.0, 10000.0)
+    assert ajustado.v_fuente_minima == pytest.approx(11.1, abs=0.2)
+    assert holgado.v_fuente_minima == pytest.approx(9.9, abs=0.2)
+    assert holgado.v_fuente_minima < ajustado.v_fuente_minima
+
+
+def test_avisa_del_poco_margen_de_fuente():
+    e = calcular_pulsos("Caudal", canal=4, unidad_por_pulso=0.1, unidad="m3",
+                        r_arriba=2200.0, r_abajo=10000.0)
+    assert not e.hay_errores
+    assert any("baja de" in t for _, t in e.avisos)
+
+
+def test_con_fuente_externa_no_hace_falta_excitech():
+    e = calcular_pulsos("Caudal", canal=4, unidad_por_pulso=0.1, unidad="m3")
+    assert "ExciteCh" not in e.codigo
+    assert "PulseEdge" not in e.codigo       # Rising ya es el default
+    assert "PulseCount(Caudal, 1, P4" in e.codigo
+
+
+def test_el_modo_excitacion_sigue_disponible():
+    e = calcular_pulsos("Lluvia_mm", canal=1, unidad_por_pulso=0.2, unidad="mm",
+                        alimentacion="opta", canal_excitacion=2)
+    assert "ExciteCh(2)" in e.codigo
+    assert any("Medí el nodo" in t for _, t in e.avisos)
+
+
+def test_el_codigo_con_fuente_externa_pasa_el_linter():
+    e = calcular_pulsos("Caudal_m3", canal=4, unidad_por_pulso=0.1, unidad="m3")
+    r = analyze("Scan(10,Sec)\n" + e.codigo +
+                "\nDataTable(T,True,1000)\nDataInterval(0,1,Min,0)\n"
+                "Totalize(1, Caudal_m3, FP2)\nEndTable\n")
+    errores = [d for d in r.diagnostics if d.severity.value == "error"]
+    assert not errores, [d.message for d in errores]

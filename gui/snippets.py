@@ -86,18 +86,19 @@ ElseIf (Nivel > Nivel_Alto) Then
 EndIf
 """
 
-PLUVIOMETRO = """'-- Pluviometro de cangilones -------------------------------------
-' Montaje: I2 excita el contacto con 3.3V y el borne de conteo (P1)
-' lleva un pull-down de 10k al NEGATIVO. En reposo el nodo esta en 0V
-' y cada volcada lo sube, asi que el flanco es de subida.
+PLUVIOMETRO = """'-- Contador de pulsos (pluviometro, caudalimetro) ----------------
+' Cableado:  +12V -- 2.2k -- [contacto] -- I1 -- 10k -- NEGATIVO
+' Cerrado el borne queda en ~8 V, abierto en 0 V: flanco de subida,
+' que es el que el equipo cuenta por defecto.
+' OJO al dimensionar: la entrada del Opta presenta ~7.8k a masa y
+' queda en paralelo con la de abajo. Un 10k/10k desde 12 V parece
+' dar 6 V pero da 3.66, y con eso no dispara nunca.
 ' El conteo se reinicia en cada scan: el valor son los pulsos del
 ' ultimo scan, no un acumulado. En la tabla va con Totalize.
 ' El Offset va en 0: se suma en CADA scan y rompe el Totalize.
 Public Lluvia_mm
 Units Lluvia_mm = mm
-ExciteCh(2)
 PulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)
-PulseEdge(Lluvia_mm, Rising)
 """
 
 TABLA_DATOS = """DataTable(NombreTabla, True, 10080)

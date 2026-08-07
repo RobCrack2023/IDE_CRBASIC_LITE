@@ -249,40 +249,69 @@ class AsistenteSensor(QDialog):
         f.addRow("Unidad de medida", self.p_unidad)
         f.addRow("Dato de fábrica", self.p_modo)
         f.addRow("Valor", self.p_valor)
-        f.addRow("Borne de entrada", self.p_canal)
-
-        grupo_lim = QGroupBox("Comprobación de alcance")
-        fl = QFormLayout(grupo_lim)
-        fl.addRow(self.p_verificar)
+        f.addRow("Borne de conteo", self.p_canal)
+        f.addRow(self.p_verificar)
         fila = QHBoxLayout()
         fila.addWidget(self.p_maximo)
         fila.addWidget(self.p_por_minuto)
-        fl.addRow("Máximo a medir", fila)
-        aclaracion = QLabel(
-            "El equipo tiene un antirrebote de 50 ms fijo por firmware, pensado "
-            "para contactos secos: no puede contar más de 20 pulsos por segundo."
+        f.addRow("Máximo a medir", fila)
+
+        # ── Circuito de entrada ─────────────────────────────────────────
+        self.p_alimentacion = QComboBox()
+        self.p_alimentacion.addItem("Fuente externa con divisor  (lo habitual)")
+        self.p_alimentacion.addItem("Excitación desde un borne del Opta (ExciteCh)")
+        self.p_alimentacion.currentIndexChanged.connect(self._al_cambiar_alimentacion)
+
+        self.p_fuente = self._spin(1, 48, 12.0, 1, " V")
+        self.p_arriba = self._spin(0.1, 1000, 2.2, 2, " kΩ")
+        self.p_abajo = self._spin(0.1, 1000, 10.0, 2, " kΩ")
+        self.p_excitacion = QSpinBox()
+        self.p_excitacion.setRange(1, N_ANALOG)
+        self.p_excitacion.setPrefix("I")
+        self.p_excitacion.setValue(2)
+        self.p_excitacion.setEnabled(False)
+
+        grupo_cir = QGroupBox("Circuito de entrada")
+        fc = QFormLayout(grupo_cir)
+        fc.addRow("Alimentación", self.p_alimentacion)
+        fc.addRow("Tensión de la fuente", self.p_fuente)
+        fc.addRow("Resistencia al positivo", self.p_arriba)
+        fc.addRow("Resistencia al negativo", self.p_abajo)
+        fc.addRow("Borne de excitación", self.p_excitacion)
+        self.p_esquema = QLabel()
+        self.p_esquema.setWordWrap(True)
+        self.p_esquema.setStyleSheet(
+            "font-family: Consolas, monospace; color: #0550ae; background: #f6f8fa;"
+            " border: 1px solid #d8dee4; border-radius: 4px; padding: 6px;"
         )
-        aclaracion.setWordWrap(True)
-        aclaracion.setStyleSheet("color: #57606a;")
-        fl.addRow(aclaracion)
+        fc.addRow(self.p_esquema)
 
         self.p_resultado = _Resultado()
 
         for w in (self.p_nombre, self.p_unidad):
             w.textChanged.connect(self._recalcular)
-        for w in (self.p_valor, self.p_maximo):
+        for w in (self.p_valor, self.p_maximo, self.p_fuente, self.p_arriba,
+                  self.p_abajo):
             w.valueChanged.connect(self._recalcular)
-        self.p_canal.valueChanged.connect(self._recalcular)
+        for w in (self.p_canal, self.p_excitacion):
+            w.valueChanged.connect(self._recalcular)
         self.p_por_minuto.currentIndexChanged.connect(self._recalcular)
 
         pagina = QWidget()
         caja = QVBoxLayout(pagina)
         fila_sup = QHBoxLayout()
         fila_sup.addWidget(grupo, 1)
-        fila_sup.addWidget(grupo_lim, 1)
+        fila_sup.addWidget(grupo_cir, 1)
         caja.addLayout(fila_sup)
         caja.addWidget(self.p_resultado, 1)
         return pagina
+
+    def _al_cambiar_alimentacion(self, indice: int) -> None:
+        externa = indice == 0
+        for w in (self.p_fuente, self.p_arriba, self.p_abajo):
+            w.setEnabled(externa)
+        self.p_excitacion.setEnabled(not externa)
+        self._recalcular()
 
     def _al_cambiar_modo_pulso(self, indice: int) -> None:
         if indice == 0:
@@ -320,6 +349,7 @@ class AsistenteSensor(QDialog):
         else:
             self.p_maximo.setEnabled(self.p_verificar.isChecked())
             self.p_por_minuto.setEnabled(self.p_verificar.isChecked())
+            externa = self.p_alimentacion.currentIndex() == 0
             self._escala = calcular_pulsos(
                 nombre=self.p_nombre.text(),
                 canal=self.p_canal.value(),
@@ -329,7 +359,23 @@ class AsistenteSensor(QDialog):
                 caudal_max=self.p_maximo.value() if self.p_verificar.isChecked() else 0.0,
                 por_segundo=self.p_por_minuto.currentIndex() == 1,
                 scan_seg=self.scan_seg,
+                alimentacion="externa" if externa else "opta",
+                v_fuente=self.p_fuente.value(),
+                r_arriba=self.p_arriba.value() * 1000.0,
+                r_abajo=self.p_abajo.value() * 1000.0,
+                canal_excitacion=self.p_excitacion.value(),
             )
+            if externa:
+                self.p_esquema.setText(
+                    f"+{self.p_fuente.value():g}V ── {self.p_arriba.value():g}kΩ ── "
+                    f"[contacto] ── I{self.p_canal.value()} ── "
+                    f"{self.p_abajo.value():g}kΩ ── NEGATIVO"
+                )
+            else:
+                self.p_esquema.setText(
+                    f"I{self.p_excitacion.value()} (3,3 V) ── [contacto] ── "
+                    f"I{self.p_canal.value()} ── 10kΩ ── NEGATIVO"
+                )
             self.p_resultado.mostrar(self._escala)
 
         self.btn_insertar.setEnabled(not self._escala.hay_errores)
