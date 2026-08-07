@@ -392,7 +392,7 @@ class VentanaPrincipal(QMainWindow):
                 "abierta por si es otra cosa.", 6000)
 
     def _forzar_completado(self):
-        self.editor.setFocus()
+        self.editor.forzar_completado()
 
     def alternar_tema(self):
         self.oscuro = not self.oscuro

@@ -321,6 +321,21 @@ class EditorCRBasic(QPlainTextEdit):
                 return
             super().keyPressEvent(evento)
 
+        self._mostrar_completado(forzar)
+
+    def forzar_completado(self) -> None:
+        """Abre el desplegable a pedido.
+
+        Existe además del atajo del editor porque la acción de menú
+        Ctrl+Espacio se lleva la tecla antes de que llegue al widget: el
+        despacho de atajos de Qt corre primero. Con esto anda por los dos
+        caminos.
+        """
+        self.setFocus()
+        self._mostrar_completado(True)
+
+    def _mostrar_completado(self, forzar: bool) -> None:
+        popup = self.completer.popup()
         prefijo = self._prefijo_actual()
         if not forzar and (len(prefijo) < 2 or not prefijo[-1:].isalnum()):
             popup.hide()
