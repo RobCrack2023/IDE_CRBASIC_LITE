@@ -321,9 +321,12 @@ CATALOGO: "list[Instr]" = [
             "pulsos por segundo, se cuenta muy por debajo de lo real y sin "
             "ningún aviso. El asistente de sensores (Ctrl+M) hace esa "
             "verificación con los datos del sensor.\n\n"
-            "Necesita una resistencia de 10 kΩ a 3,3 V puesta AFUERA: el "
-            "pull-up interno no llega al borne por el divisor de entrada del "
-            "Opta. Sin esa resistencia no cuenta nada.\n\n"
+            "El contacto necesita alimentación: un borne declarado con "
+            "ExciteCh lo excita con 3,3 V, y el borne de conteo lleva un "
+            "pull-down de 10 kΩ al negativo. Sin la excitación no hay fuente "
+            "y no se genera ningún pulso.\n\n"
+            "El flanco por defecto es de subida (Rising), que es el que "
+            "corresponde a ese montaje. Se cambia con PulseEdge.\n\n"
             "El Offset se suma en cada scan, no una sola vez. Con Totalize en "
             "la tabla, un Offset distinto de 0 acumula un total que nunca "
             "ocurrió.\n\n"
@@ -671,19 +674,82 @@ CATALOGO: "list[Instr]" = [
     # ── Reconocidas pero sin efecto ──────────────────────────────────
     Instr(
         nombre="Battery",
-        firma="Battery(Variable)",
-        resumen="No hace nada; para medir la alimentación usá el truco del nombre",
-        categoria="Reconocidas sin efecto",
+        firma="Battery(Variable, Canal)",
+        resumen="Mide el voltaje de alimentación en el borne que le indiques",
+        categoria="Entradas",
         detalle=(
-            "El Opta la acepta para no romper programas de CR1000, pero no mide "
-            "nada y la variable queda en 0.\n\n"
-            "Para leer la alimentación de verdad, alcanza con que la variable "
-            "tenga «att» en el nombre —BattV, Batt_Volt— y no tenga ni "
-            "Units = mA ni VoltSE/VoltDiff. El equipo le asigna el borne 8 con "
-            "el divisor correspondiente automáticamente."
+            "Lee la tensión de alimentación a través del divisor resistivo, "
+            "aplicando el factor 3,351 que le corresponde.\n\n"
+            "Hasta el firmware 1.6.8 esta instrucción no hacía nada y el "
+            "divisor tenía que estar sí o sí en el borne 8. Desde la 1.6.9 "
+            "podés indicar en cuál está cableado. El canal queda reservado: no "
+            "se lo reparte a ninguna otra variable.\n\n"
+            "Sigue funcionando el atajo viejo: una variable con «att» en el "
+            "nombre —BattV, Batt_Volt— que no tenga Units = mA ni VoltSE toma "
+            "el borne 8 sola. Pero solo si ese borne está libre."
         ),
-        parametros=[Param("Variable", "La variable, que va a quedar en 0.", ignorado=True)],
-        ejemplo="Public BattV    ' esto solo ya alcanza",
+        parametros=[
+            Param("Variable", "La variable donde se guarda el voltaje."),
+            Param("Canal", "El borne donde está el divisor, de 1 a 8. Sin este argumento usa el 8.", opcional=True),
+        ],
+        ejemplo="Public BattV\nBattery(BattV, 8)",
+        trampa=(
+            "Un canal fuera del rango 1-8 se registra en el log y cae al 8 "
+            "igual. Y si usás el atajo del nombre con «att» pero el borne 8 ya "
+            "está ocupado por otra cosa, la variable se queda sin canal y vale "
+            "0: ahí hay que declararla con Battery(Variable, N)."
+        ),
+    ),
+    Instr(
+        nombre="ExciteCh",
+        firma="ExciteCh(Canal)",
+        resumen="Pone un borne como salida en 3,3 V para alimentar un contacto",
+        categoria="Entradas",
+        detalle=(
+            "Convierte un borne de entrada en una salida fija en alto, de unos "
+            "3,3 V. Sirve como fuente para el contacto seco de un sensor de "
+            "pulsos: sin esa alimentación el contacto no tiene de dónde sacar "
+            "tensión y no genera ningún pulso.\n\n"
+            "El montaje completo es: este borne excita el contacto, y el borne "
+            "de conteo lleva un pull-down de 10 kΩ al negativo. En reposo el "
+            "nodo de conteo queda en 0 V y cada cierre del contacto lo sube, "
+            "así que el pulso llega como flanco de subida.\n\n"
+            "El canal queda reservado y no se lo reparte a ninguna medición. Es "
+            "una instrucción propia del Opta, no existe en un CR1000."
+        ),
+        parametros=[Param("Canal", "El borne que pasa a ser salida, de 1 a 8.")],
+        ejemplo="ExciteCh(2)\nPulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)",
+        trampa=(
+            "No pongas la excitación en el mismo borne que el conteo: la salida "
+            "gana y el contador no ve ningún flanco. Y ese borne deja de servir "
+            "para medir: queda forzado a 3,3 V."
+        ),
+    ),
+    Instr(
+        nombre="PulseEdge",
+        firma="PulseEdge(Variable, Flanco)",
+        resumen="Elige si el contador cuenta al subir o al bajar la señal",
+        categoria="Entradas",
+        detalle=(
+            "Indica en qué momento del pulso hay que contar. Por defecto es "
+            "Rising, que es lo que corresponde al montaje con excitación y "
+            "pull-down al negativo: el nodo está en 0 V y sube con cada pulso.\n\n"
+            "Se usa Falling en el montaje inverso, con pull-up: el nodo está "
+            "en alto en reposo y el contacto lo lleva a masa.\n\n"
+            "Acepta Rising o Falling, y también Subida o Bajada. Es una "
+            "instrucción propia del Opta."
+        ),
+        parametros=[
+            Param("Variable", "La variable del PulseCount cuyo flanco se cambia."),
+            Param("Flanco", "Rising o Falling (también valen Subida y Bajada)."),
+        ],
+        ejemplo="PulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)\nPulseEdge(Lluvia_mm, Rising)",
+        trampa=(
+            "Hasta el firmware 1.6.8 el flanco era Falling y no se podía "
+            "cambiar. Si tenés un montaje viejo con pull-up, ahora hay que "
+            "escribir PulseEdge(Variable, Falling) explícitamente o el contador "
+            "no va a contar lo mismo que antes."
+        ),
     ),
     Instr(
         nombre="PanelTemp",

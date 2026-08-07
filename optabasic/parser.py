@@ -36,7 +36,8 @@ _OUTPUT_KEYWORDS = {
     "MINIMUM": "Minimum",
     "TOTALIZE": "Totalize",
 }
-_NOOP_KEYWORDS = ("BEGINPROG", "ENDPROG", "NEXTSCAN", "CALLTABLE", "BATTERY")
+#: Battery salió de esta lista en v1.6.9: pasó de no-op a instrucción real.
+_NOOP_KEYWORDS = ("BEGINPROG", "ENDPROG", "NEXTSCAN", "CALLTABLE")
 _RECOGNIZED_UNSIMULATED = ("BRHALF", "REALTIME", "PANELTEMP", "SW12")
 _COND_OPS = ((">=", CmpOp.GE), ("<=", CmpOp.LE), ("<>", CmpOp.NE),
              (">", CmpOp.GT), ("<", CmpOp.LT), ("=", CmpOp.EQ))
@@ -51,8 +52,11 @@ class ParseResult:
     #: Palabras clave vistas, para las reglas de lint.py.
     saw_begin_prog: bool = False
     saw_end_prog: bool = False
-    #: Canales pedidos explícitamente (AIChannel/VoltDiff) por variable.
+    #: Canales pedidos explícitamente (AIChannel/VoltDiff/Battery) por variable.
     explicit_pins: "dict[int, int]" = field(default_factory=dict)
+    #: Variable con «att» en el nombre que se quedó sin el canal de batería
+    #: porque A7 ya estaba tomado.
+    att_sin_canal: str = ""
 
 
 def parse(text: str, size_bytes: "int | None" = None) -> ParseResult:
@@ -83,13 +87,19 @@ class _Parser:
         self.line: SourceLine = None  # type: ignore[assignment]
 
     # ── Diagnóstico con el texto exacto del firmware ────────────────────
-    def issue(self, reason: str, severity: Severity = Severity.ERROR, code: str = "") -> None:
+    def issue(self, reason: str, severity: Severity = Severity.ERROR, code: str = "",
+              mensaje: str = "") -> None:
+        """Registra lo mismo que el firmware escribirá en su .HLOG.
+
+        `mensaje` permite contar qué pasa de verdad cuando el equipo
+        registra la línea como «ignorada» pero igual aplica parte de ella.
+        """
         self.diags.add(
             Diagnostic(
                 line=self.line.file_no,
                 fw_line=self.line.fw_no,
                 severity=severity,
-                message=f"El Opta ignora esta línea: {reason}",
+                message=mensaje or f"El Opta ignora esta línea: {reason}",
                 source=Source.FIRMWARE,
                 code=code or "fw",
                 fragment=self.line.text.strip(),
@@ -152,6 +162,12 @@ class _Parser:
             self.do_portset(pl)
         elif cr_eq(kw, "PULSECOUNT"):
             self.do_pulsecount(pl)
+        elif cr_eq(kw, "PULSEEDGE"):
+            self.do_pulseedge(pl)
+        elif cr_eq(kw, "EXCITECH"):
+            self.do_excitech(pl)
+        elif cr_eq(kw, "BATTERY"):
+            self.do_battery(pl)
         elif kw in _NOOP_KEYWORDS:
             if kw == "BEGINPROG":
                 self.result.saw_begin_prog = True
@@ -418,7 +434,19 @@ class _Parser:
             # imposible (255) y DO5..DO9 quedan fuera de rango.
             v.relay_idx = ord(n[2]) - ord("1")
         else:
-            self.issue("PortSet: falta N, nombre no es DOx", code="fw-portset-nombre")
+            # isRelay ya quedó marcado antes de este chequeo, así que la
+            # variable SÍ controla un relé: el primero, por descarte.
+            self.issue(
+                "PortSet: falta N, nombre no es DOx",
+                Severity.WARNING,
+                "fw-portset-nombre",
+                mensaje=(
+                    f"«{v.name}» no empieza con DO1..DO4 y no se indicó el relé, así "
+                    "que el equipo lo deja en el relé 1 por descarte, no por decisión "
+                    f"tuya. Escribí PortSet({v.name}, 0, N) con el número que "
+                    "corresponda."
+                ),
+            )
 
     # ── Contador de pulsos ──────────────────────────────────────────────
     def do_pulsecount(self, pl: ParsedLine) -> None:
@@ -441,21 +469,79 @@ class _Parser:
         v.pulse_pin = ch
         v.pulse_mult = c_atof(pl.args[5]) if len(pl.args) >= 6 else 1.0
         v.pulse_offset = c_atof(pl.args[6]) if len(pl.args) >= 7 else 0.0
+        if v.pulse_offset != 0.0:
+            self.issue("PulseCount: Offset!=0 rompe Totalize",
+                       Severity.WARNING, "fw-pulse-offset")
+
+    def do_pulseedge(self, pl: ParsedLine) -> None:
+        """PulseEdge(Dest, Rising|Falling) — extensión propia del Opta."""
+        if len(pl.args) < 2:
+            self.issue("PulseEdge: faltan argumentos", code="fw-pulseedge")
+            return
+        v = self.prog.find_var(pl.args[0])
+        if v is None:
+            self.issue("PulseEdge: var no declarada", code="fw-pulseedge-var")
+            return
+        e = pl.args[1]
+        if any(cr_eq(e, x) for x in ("RISING", "SUBIDA", "1")):
+            v.pulse_edge = "RISING"
+        elif any(cr_eq(e, x) for x in ("FALLING", "BAJADA", "0")):
+            v.pulse_edge = "FALLING"
+        else:
+            self.issue("PulseEdge: use Rising o Falling", code="fw-pulseedge-valor")
+            return
+        v.pulse_edge_line = self.line.file_no
+
+    def do_excitech(self, pl: ParsedLine) -> None:
+        """ExciteCh(N) — pone un canal como salida en alto para excitar
+        el contacto de un sensor de pulsos. El canal queda reservado."""
+        if not pl.args:
+            self.issue("ExciteCh: faltan argumentos", code="fw-excitech")
+            return
+        ch = c_atoi(pl.args[0])
+        if not (1 <= ch <= 8):
+            self.issue("ExciteCh: canal fuera de rango 1-8", code="fw-excitech-rango")
+            return
+        self.prog.excite_channels[ch - 1] = self.line.file_no
+
+    def do_battery(self, pl: ParsedLine) -> None:
+        """Battery(Dest [, N]) — desde v1.6.9 lee de verdad la alimentación.
+
+        Sin N, o con el «Option» 0 de un CR1000 real, usa A7. Un canal
+        fuera de rango se registra y cae también en A7.
+        """
+        if not pl.args:
+            return  # Battery() sin argumentos sigue siendo un no-op
+        v = self.prog.find_var(pl.args[0])
+        if v is None:
+            self.issue("Battery: var no declarada", code="fw-battery-var")
+            return
+        ch = c_atoi(pl.args[1]) if len(pl.args) >= 2 else 0
+        if ch == 0:
+            ch = 8
+        elif not (1 <= ch <= 8):
+            self.issue("Battery: canal fuera de rango 1-8", code="fw-battery-rango")
+            ch = 8
+        v.is_batt_v = True
+        v.no_auto_pin = True
+        v.pin = ch - 1
+        v.hw_instr_lines.append(self.line.file_no)
+        self.result.explicit_pins[self.prog.var_index(v.name)] = ch - 1
 
     # ── Estructura de bloques If ────────────────────────────────────────
     def push_struct(self, st_type: StmtType) -> None:
         if len(self.prog.stmts) >= L.MAX_STMTS:
-            self.issue("limite de instrucciones (32)", code="fw-stmts-limite")
+            self.issue(f"limite de instrucciones ({L.MAX_STMTS})", code="fw-stmts-limite")
             return
         self.prog.stmts.append(Stmt(type=st_type, line=self.line.file_no))
 
     def do_elseif(self, line: str) -> None:
         if len(self.prog.stmts) >= L.MAX_STMTS:
-            self.issue("ElseIf: cond invalida o limite(32)", code="fw-stmts-limite")
+            self.issue(f"ElseIf: cond invalida o limite({L.MAX_STMTS})", code="fw-stmts-limite")
             return
         st = Stmt(type=StmtType.ELSEIF, line=self.line.file_no)
         if not self.parse_block_cond(line, st):
-            self.issue("ElseIf: cond invalida o limite(32)", code="fw-elseif")
+            self.issue(f"ElseIf: cond invalida o limite({L.MAX_STMTS})", code="fw-elseif")
             return
         self.prog.stmts.append(st)
 
@@ -476,7 +562,7 @@ class _Parser:
                         self.prog.stmts.append(st)
                         ok = True
                 if not ok:
-                    self.issue("If: cond invalida o limite(32)", code="fw-if-cond")
+                    self.issue(f"If: cond invalida o limite({L.MAX_STMTS})", code="fw-if-cond")
                 return
         self.try_parse_stmt(line, kw)
 
@@ -486,11 +572,15 @@ class _Parser:
             self._try_parse_if(line)
             return
 
-        eq = line.find("=")
+        # Desde v1.6.8 se salta la indentación ANTES de recortar el nombre
+        # destino. Hasta esa versión toda asignación simple indentada —el
+        # estilo normal dentro de un Scan— se descartaba en silencio.
+        ls = line.lstrip()
+        eq = ls.find("=")
         if eq <= 0:
             self.issue("instruccion no reconocida", code="fw-desconocida")
             return
-        dst = rstrip_ctrl(strncpy(line[:eq], L.MAX_VAR_NAME))
+        dst = rstrip_ctrl(strncpy(ls[:eq], L.MAX_VAR_NAME))
         if not dst or dst[-1] in "<>":
             self.issue("instruccion no reconocida", code="fw-desconocida")
             return
@@ -499,7 +589,7 @@ class _Parser:
             self.issue("asignacion a variable no declarada", code="fw-asign-var")
             return
 
-        expr_text = line[eq + 1:]
+        expr_text = ls[eq + 1:]
         res = self.compile(expr_text)
         # El firmware marca noAutoPin ANTES de validar la expresión: aunque
         # la asignación se descarte, la variable ya perdió su canal.
@@ -509,7 +599,7 @@ class _Parser:
             self.issue("expresion invalida", code="fw-expr")
             return
         if len(self.prog.stmts) >= L.MAX_STMTS:
-            self.issue("limite de instrucciones (32)", code="fw-stmts-limite")
+            self.issue(f"limite de instrucciones ({L.MAX_STMTS})", code="fw-stmts-limite")
             return
         self.mark_reads(res.refs)
         self.prog.stmts.append(
@@ -556,7 +646,7 @@ class _Parser:
             self.issue("If Then: expresion invalida", code="fw-if-expr")
             return
         if len(self.prog.stmts) >= L.MAX_STMTS:
-            self.issue("limite de instrucciones (32)", code="fw-stmts-limite")
+            self.issue(f"limite de instrucciones ({L.MAX_STMTS})", code="fw-stmts-limite")
             return
         st.dest_var = self.prog.var_index(dst)
         st.expr_tokens = res.tokens
@@ -668,24 +758,37 @@ class _Parser:
     def assign_channels(self) -> None:
         """Réplica del pase final de parse_crbasic().
 
-        Ojo con dos detalles que no están documentados: los canales pedidos
-        explícitamente NO se marcan como ocupados (used[] arranca todo en
-        false), y los canales de PulseCount tampoco. Las colisiones que eso
-        provoca las detecta lint.py.
+        Desde v1.6.9 los canales ya comprometidos —Battery(...,N),
+        AIChannel, VoltDiff/VoltSE con Chan, PulseCount y ExciteCh— se
+        marcan como ocupados antes del reparto secuencial, así que ya no
+        se pueden entregar dos veces. Hasta v1.6.8 used[] arrancaba vacío
+        y el reparto automático pisaba los canales fijados a mano.
         """
         for v in self.prog.vars:
             if v.has_volt_instr:
                 v.no_auto_pin = False
 
         used = [False] * 8
+        for v in self.prog.vars:
+            if not v.is_relay and 0 <= v.pin < 8:
+                used[v.pin] = True
+            if v.is_pulse_count and 0 <= v.pulse_pin < 8:
+                used[v.pulse_pin] = True
+        for ch in self.prog.excite_channels:
+            used[ch] = True
 
+        # Reserva histórica: nombre con «att» sin canal ni instrucción de
+        # lectura → A7. Desde v1.6.9 solo si nadie tomó ese canal.
         for v in self.prog.vars:
             if v.is_relay or v.no_auto_pin or v.pin >= 0 or v.is4_20mA or v.has_volt_instr:
                 continue
             if "att" in v.name or "ATT" in v.name or "Att" in v.name:
-                v.pin = 7
-                v.is_batt_v = True
-                used[7] = True
+                if used[7]:
+                    self.result.att_sin_canal = v.name
+                else:
+                    v.pin = 7
+                    v.is_batt_v = True
+                    used[7] = True
                 break
 
         next_pin = 0

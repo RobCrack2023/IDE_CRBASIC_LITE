@@ -48,6 +48,11 @@ class Var:
     pulse_pin: int = -1
     pulse_mult: float = 1.0
     pulse_offset: float = 0.0
+    #: Flanco que cuenta la interrupción. Desde v1.6.9 el default es RISING
+    #: (canal con pull-down al negativo, excitado por ExciteCh); antes era
+    #: FALLING. Se cambia con PulseEdge().
+    pulse_edge: str = "RISING"
+    pulse_edge_line: int = 0
 
     # ── Metadatos del IDE (no existen en el firmware) ────────────────────
     decl_line: int = 0          # línea de archivo del Public/Dim
@@ -177,6 +182,9 @@ class Program:
     scan_interval_ms: int = DEFAULT_SCAN_MS
     scan_line: int = 0
     size_bytes: int = 0
+    #: Canales declarados con ExciteCh: {índice 0-7 → línea del archivo}.
+    #: Quedan como salida en alto (~3.3 V) y reservados.
+    excite_channels: "dict[int, int]" = field(default_factory=dict)
 
     def find_var(self, name: str) -> "Var | None":
         """cr_find_var(): primera coincidencia case-insensitive."""

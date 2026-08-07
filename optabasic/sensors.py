@@ -16,15 +16,39 @@ Todas las constantes vienen de OptaPakBus.ino:
 
 from dataclasses import dataclass, field
 
-# ── Hardware del Opta (OptaPakBus.ino:1159-1196) ─────────────────────────
+# ── Hardware del Opta (OptaPakBus.ino:1201-1250) ─────────────────────────
 VREF = 10.70                #: tensión de fondo de escala de la entrada
 ADC_MAX = 4095              #: 12 bits
-SHUNT_NOMINAL = 270.0       #: el valor que el firmware tiene fijo por código
 MV_POR_CUENTA = VREF * 1000.0 / ADC_MAX     #: ≈ 2.613 mV por cuenta de ADC
 
-# ── PulseCount (OptaPakBus.ino:429-440) ──────────────────────────────────
+#: El valor que el firmware tiene fijo por código (SHUNT_OHM). Desde
+#: v1.6.10 es 260, no 270: es el shunt EFECTIVO, medido en terreno, no el
+#: resistor físico.
+SHUNT_NOMINAL = 260.0
+
+#: Impedancia de entrada del canal analógico. Queda en paralelo con el
+#: resistor del lazo, así que la caída de tensión que mide el equipo
+#: corresponde al paralelo de los dos y no al resistor solo. Deducida de la
+#: misma medición de terreno: 1/(1/260 − 1/269) ≈ 7.8 kΩ.
+ZIN = 7800.0
+
+# ── PulseCount (OptaPakBus.ino:445-460) ──────────────────────────────────
 DEBOUNCE_MS = 50.0
 TASA_MAX_HZ = 1000.0 / DEBOUNCE_MS          #: 20 pulsos por segundo
+
+
+def shunt_efectivo(resistor_fisico: float) -> float:
+    """El shunt real que ve el lazo: el resistor en paralelo con la entrada.
+
+    Un resistor de 269 Ω medido con tester se comporta como 260 Ω, porque
+    la entrada analógica del Opta presenta ~7.8 kΩ a masa y se lleva parte
+    de la corriente. Ignorar esto da un error de span del 3,5% con los
+    valores habituales — que es exactamente el error que tenía el firmware
+    antes de la calibración de terreno.
+    """
+    if resistor_fisico <= 0:
+        return 0.0
+    return resistor_fisico * ZIN / (resistor_fisico + ZIN)
 
 ERROR, AVISO, NOTA = "error", "aviso", "nota"
 
@@ -66,19 +90,25 @@ def calcular_4_20(
     canal: int = 1,
     i_min: float = 4.0,
     i_max: float = 20.0,
-    shunt: float = SHUNT_NOMINAL,
+    shunt: float = 269.0,
     modo: str = "mA",
 ) -> Escala:
     """Calcula Mult y Offset para un sensor de corriente.
 
+    `shunt` es el resistor FÍSICO del lazo, el que se mide con el tester.
+    Adentro se calcula el valor efectivo poniéndolo en paralelo con la
+    impedancia de entrada del Opta, que es lo que el equipo mide en
+    realidad.
+
     `modo` elige cómo lo lee el equipo:
 
-    - "mA": la variable lleva Units = mA y el firmware la convierte a
-      miliamperes él mismo, dividiendo por los 270 Ω que tiene fijos. Si la
-      resistencia real es otra, se compensa dentro de Mult.
-    - "voltse": se lee como voltaje con VoltSE y la conversión se hace toda
-      en Mult. Es exacto con cualquier resistencia y no depende del valor
-      que el firmware trae por código.
+    - "mA": la variable lleva Units = mA y el firmware la convierte él
+      mismo, dividiendo siempre por los 260 Ω que tiene fijos por código.
+      Si el lazo real da otro valor efectivo, la diferencia se compensa
+      dentro de Mult.
+    - "voltse": se lee como voltaje con VoltSE y toda la conversión va en
+      Mult. Es exacto con cualquier resistor y no depende del valor que el
+      firmware traiga fijo.
     """
     nombre = (nombre or "Sensor").strip() or "Sensor"
     span_valor = valor_max - valor_min
@@ -94,6 +124,9 @@ def calcular_4_20(
         e.avisar(ERROR, "La resistencia shunt tiene que ser mayor que cero.")
         return e
 
+    resistor = shunt
+    shunt = shunt_efectivo(resistor)
+
     # El Offset sale igual en los dos modos, porque en ambos la recta pasa
     # por (i_min, valor_min).
     offset = valor_min - i_min * span_valor / span_i
@@ -107,6 +140,11 @@ def calcular_4_20(
     # ── Comprobaciones eléctricas ───────────────────────────────────────
     v_min = i_min * shunt / 1000.0
     v_max = i_max * shunt / 1000.0
+    esc.datos.append((
+        "Shunt efectivo",
+        f"{shunt:.1f} Ω  (el resistor de {resistor:g} Ω en paralelo con los "
+        f"{ZIN / 1000:g} kΩ de la entrada)",
+    ))
     esc.datos.append(("Tensión sobre la resistencia",
                       f"{v_min:.2f} V a {i_min:g} mA  →  {v_max:.2f} V a {i_max:g} mA"))
 
@@ -145,33 +183,41 @@ def calcular_4_20(
         if modo == "mA":
             esc.avisar(
                 AVISO,
-                f"El firmware tiene la resistencia fija en {SHUNT_NOMINAL:g} Ω y la "
-                f"tuya es de {shunt:g} Ω, así que la variable «{nombre}_mA» NO va a "
-                f"mostrar los miliamperes reales sino {factor:.3f} veces más "
-                f"({i_max:g} mA reales se ven como {i_max * factor:.2f}). El valor "
-                "de ingeniería sale bien igual porque la diferencia va compensada "
-                "en Mult, pero ojo con los umbrales de falla: usá los que genera "
-                "el asistente, no 3.5 y 20.5.",
+                f"El firmware divide siempre por {SHUNT_NOMINAL:g} Ω y tu lazo da "
+                f"{shunt:.1f} Ω efectivos, así que la variable «{nombre}_mA» NO va a "
+                f"mostrar los miliamperes reales sino {factor:.3f} veces "
+                f"({i_max:g} mA reales se ven como {i_max * factor:.2f}). El valor de "
+                "ingeniería sale bien igual porque la diferencia va compensada en "
+                "Mult, pero ojo con los umbrales de falla: usá los que genera el "
+                "asistente, no 3.5 y 20.5.",
             )
         else:
             esc.avisar(
                 NOTA,
-                f"Con VoltSE la resistencia de {shunt:g} Ω entra en la cuenta de "
-                "forma exacta; no importa que el firmware traiga 270 Ω fijos.",
+                f"Con VoltSE los {shunt:.1f} Ω efectivos entran en la cuenta de forma "
+                f"exacta; no importa que el firmware traiga {SHUNT_NOMINAL:g} fijos.",
             )
+    elif modo == "mA":
+        esc.avisar(
+            NOTA,
+            f"El lazo da {shunt:.1f} Ω efectivos, prácticamente los "
+            f"{SHUNT_NOMINAL:g} que el firmware tiene calibrados, así que "
+            f"«{nombre}_mA» va a mostrar los miliamperes reales.",
+        )
 
     esc.codigo = _codigo_4_20(nombre, esc, unidad, canal, i_min, i_max,
-                              shunt, modo, valor_min, valor_max)
+                              shunt, resistor, modo, valor_min, valor_max)
     return esc
 
 
-def _codigo_4_20(nombre, esc, unidad, canal, i_min, i_max, shunt, modo,
-                 valor_min, valor_max) -> str:
+def _codigo_4_20(nombre, esc, unidad, canal, i_min, i_max, shunt, resistor,
+                 modo, valor_min, valor_max) -> str:
     factor = shunt / SHUNT_NOMINAL
     u = f" {unidad}" if unidad else ""
     cabecera = [
         f"'-- Sensor {nombre}: {_num(valor_min, 3)} a {_num(valor_max, 3)}{u}",
-        f"'   Lazo de {i_min:g}-{i_max:g} mA sobre una resistencia de {shunt:g} ohm.",
+        f"'   Lazo de {i_min:g}-{i_max:g} mA sobre un resistor de {resistor:g} ohm",
+        f"'   ({shunt:.1f} ohm efectivos con la entrada del Opta en paralelo).",
     ]
 
     if modo == "voltse":
@@ -228,6 +274,7 @@ def calcular_pulsos(
     caudal_max: float = 0.0,
     por_segundo: bool = False,
     scan_seg: float = 10.0,
+    canal_excitacion: int = 0,
 ) -> Escala:
     """Calcula Mult para un contador de pulsos y revisa que sea viable.
 
@@ -240,6 +287,9 @@ def calcular_pulsos(
     antirrebote de 50 ms del firmware lo deja fuera de alcance.
     """
     nombre = (nombre or "Pulsos").strip() or "Pulsos"
+    if not canal_excitacion:
+        # Por defecto, el canal de al lado del de conteo.
+        canal_excitacion = canal + 1 if canal < 8 else canal - 1
 
     if modo == "por_unidad":
         if unidad_por_pulso <= 0:
@@ -293,9 +343,12 @@ def calcular_pulsos(
     # ── Advertencias que valen siempre ──────────────────────────────────
     esc.avisar(
         AVISO,
-        "El contacto necesita una resistencia de 10 kΩ a 3,3 V puesta afuera: el "
-        "pull-up interno del microcontrolador no llega al borne por el divisor de "
-        "entrada del Opta. Sin esa resistencia no cuenta nada.",
+        f"El contacto necesita alimentación y referencia: un canal declarado con "
+        f"ExciteCh({canal_excitacion}) queda en ~3,3 V y excita el contacto, y el "
+        f"borne de conteo lleva un pull-down de 10 kΩ al NEGATIVO. En reposo el nodo "
+        f"está en 0 V y cada pulso lo sube, así que el flanco es de subida (RISING, "
+        f"que es el que el equipo usa por defecto). Sin la excitación no hay fuente y "
+        f"no se genera ningún pulso.",
     )
     esc.avisar(
         AVISO,
@@ -318,12 +371,16 @@ def calcular_pulsos(
 
     esc.codigo = "\n".join([
         f"'-- Contador de pulsos {nombre}: {detalle}",
-        f"'   Contacto seco en P{canal}, con pull-up externo de 10k a 3.3V.",
+        f"'   Conteo en P{canal}, con pull-down de 10k al NEGATIVO.",
+        f"'   La excitacion de I{canal_excitacion} alimenta el contacto (~3.3 V):",
+        f"'   en reposo el nodo esta en 0 V y cada pulso lo sube (flanco RISING).",
         f"'   Tope del equipo: {TASA_MAX_HZ:g} pulsos/s por el antirrebote de "
         f"{DEBOUNCE_MS:g} ms.",
         f"Public {nombre}",
         f"Units {nombre} = {unidad}" if unidad else "",
+        f"ExciteCh({canal_excitacion})",
         f"PulseCount({nombre}, 1, P{canal}, 2, 0, {_num(mult, 8)}, 0.0)",
+        f"PulseEdge({nombre}, Rising)",
         "",
         "' En la tabla, acumulado del periodo:",
         f"'     Totalize(1, {nombre}, FP2)",

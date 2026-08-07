@@ -1,0 +1,88 @@
+'==============================================================
+' OptaPakBus - Nivel por ultrasonido 4-20mA (rio / nieve)
+' Firmware v1.6.11+     Guia de calibracion: GUIA_NIVEL.md
+'
+'   I1 (A0) - Sensor ultrasonico 4-20mA, rango util 0.30-5.00 m
+'   I8 (A7) - Divisor de bateria 2x10k
+'
+' Nivel_m = Dist_Cero - Dist_m   (el sensor mide DISTANCIA hacia
+' abajo; el nivel es la resta contra la lectura de nivel cero)
+'
+' AJUSTAR: Dist_Cero, Nivel_Alerta, ServerPort, PakBusAddress.
+' Verificar Dist_Mult contra la hoja del sensor. Ver GUIA_NIVEL.md
+'
+' OJO: el buffer del equipo son 8192 bytes y lo que sobra se
+' descarta. NO agregar comentarios largos acá.
+'==============================================================
+
+StationName=Nivel_1
+ServerHost=loggerip.ingproy.com
+ServerPort=6786
+PakBusAddress=1
+
+'-- Escalado (hoja del sensor + zona ciega) -----------------------
+' Hoja: H = (I-4)/16 * 5 m  ->  Mult = 0.3125 ; Off = -1.25
+' Ese H se mide desde el limite de la ZONA CIEGA (250 mm), no desde
+' la cara del transductor. Restando esos 0.25 m: Off = -1.50
+' Verificado: 0.3125*10.2307 - 1.50 = 1.697 m vs 1.70 con cinta.
+Const Dist_Mult = 0.3125       ' m por mA
+Const Dist_Off  = -1.50        ' m (incluye la zona ciega de 250mm)
+
+'-- Cero: lectura de Dist_m con nivel cero (NO medir con cinta) ---
+Const Dist_Cero = 1.7285         ' m - TOMAR DEL SENSOR Y AJUSTAR
+
+'-- Diagnostico del lazo y alerta ---------------------------------
+Const SensorMin_mA = 3.5
+Const SensorMax_mA = 20.5
+Const Nivel_Alerta = 3.00      ' m - AJUSTAR al sitio
+
+Public Dist_mA
+Units Dist_mA = mA
+
+Public Dist_m                  ' distancia sensor -> superficie
+Public Nivel_m                 ' nivel sobre la referencia
+Public BattV
+Public SensorFalla             ' 1 = lazo fuera de rango
+Public Alerta                  ' 1 = nivel sobre el umbral
+
+'-- Cada 15 min, 8640 registros = 90 dias -------------------------
+DataTable(Datos, True, 8640)
+    DataInterval(0, 15, Min, 0)
+    Average(1, Nivel_m,     FP2)
+    Maximum(1, Nivel_m,     FP2)
+    Minimum(1, Nivel_m,     FP2)
+    Average(1, Dist_mA,     FP2)
+    Sample(1,  BattV,       FP2)
+    Sample(1,  SensorFalla, FP2)
+EndTable
+
+'-- Diario, 730 registros = 2 anios -------------------------------
+DataTable(Diario, True, 730)
+    DataInterval(0, 1440, Min, 0)
+    Average(1, Nivel_m, FP2)
+    Maximum(1, Nivel_m, FP2)
+    Minimum(1, Nivel_m, FP2)
+    Minimum(1, BattV,   FP2)
+EndTable
+
+BeginProg
+    Scan(2, Sec, 0, 0)
+
+        AIChannel(Dist_mA, 1)
+        Battery(BattV, 8)
+
+        Dist_m  = Dist_mA * Dist_Mult + Dist_Off
+        Nivel_m = Dist_Cero - Dist_m
+
+        If (Dist_mA < SensorMin_mA) Then SensorFalla = 1
+        If (Dist_mA > SensorMax_mA) Then SensorFalla = 1
+        If (Dist_mA >= SensorMin_mA) AND (Dist_mA <= SensorMax_mA) Then SensorFalla = 0
+
+        If (Nivel_m >  Nivel_Alerta) Then Alerta = 1
+        If (Nivel_m <= Nivel_Alerta) Then Alerta = 0
+		
+        CallTable Datos
+        CallTable Diario
+
+    NextScan
+EndProg

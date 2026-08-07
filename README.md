@@ -14,6 +14,13 @@ El validador no es una aproximación: es un port en Python de
 `parse_crbasic()`, `cr_compile_expr()` y la asignación de canales del
 firmware, con sus mismos truncados y sus mismas conversiones parciales.
 
+> **Calcado sobre el firmware 1.6.12.** El comportamiento del equipo
+> cambió bastante entre la 1.6.7 y la 1.6.12 —límites, calibración del
+> shunt, instrucciones nuevas y dos bugs silenciosos corregidos—, así que
+> un IDE desfasado avisa de cosas que ya no pasan y calla las que sí. La
+> versión de referencia está en `optabasic/limits.py` como
+> `FIRMWARE_VERSION`.
+
 ## Uso
 
 Todo pasa por `run.bat`. Doble clic para abrir el IDE, o desde la consola:
@@ -53,32 +60,49 @@ estación, y el error no se nota: el equipo reporta números perfectamente
 plausibles que están mal. El asistente los calcula, revisa que la
 instalación sea eléctricamente viable y deja el código escrito.
 
-**Sensores 4-20 mA.** Se cargan el rango del sensor y la resistencia que
-está puesta en el gabinete. Ahí aparece el problema que el asistente
-existe para resolver: **el firmware tiene el shunt fijo en 270 Ω por
-código** (`SHUNT_OHM`, OptaPakBus.ino:1168). Con la resistencia estándar
-de 250 Ω, un lazo a 20 mA reales se lee como 18,52 mA. El valor de
-ingeniería se puede corregir metiendo el factor en `Mult`, pero los
-umbrales de falla no: quien copie el clásico `If (Sensor_mA < 3.5)` está
-comparando contra un número que ya no significa 3,5 mA. El asistente
-genera los umbrales corregidos.
+**Sensores 4-20 mA.** Se cargan el rango del sensor y el resistor que está
+puesto en el gabinete —el que se mide con el tester—. Hay dos cosas que el
+asistente resuelve y que a mano se pasan por alto.
+
+La primera: **la caída de tensión no es sobre el resistor sino sobre el
+resistor en paralelo con la entrada del Opta**, que presenta unos 7,8 kΩ a
+masa. Un R4 de 269 Ω se comporta como 260 Ω. Calcular con el valor del
+tester da un error de span del 3,5%, que sobre un sensor de 0-5 m son más
+de 15 cm en fondo de escala. Es exactamente el error que tenía el firmware
+hasta que se calibró en terreno.
+
+La segunda: **el firmware divide siempre por los 260 Ω que tiene fijos por
+código** (`SHUNT_OHM`). Si el lazo real da otro valor efectivo, la
+variable en mA no muestra los miliamperes reales. El valor de ingeniería
+se corrige metiendo el factor en `Mult`, pero los umbrales de falla no:
+quien copie el clásico `If (Sensor_mA < 3.5)` está comparando contra un
+número que ya no significa 3,5 mA. El asistente genera los umbrales
+corregidos.
 
 También avisa de lo que no se puede arreglar con matemática: a 20 mA
 sobre 600 Ω son 12 V y la entrada llega a 10,70 V, así que la lectura se
 corta arriba y el sensor nunca marca el máximo. Y muestra la resolución
 real que se consigue, en unidades de ingeniería por cuenta de ADC.
 
-Alternativa exacta: leer con `VoltSE` en vez de `Units = mA`. Ahí la
-resistencia entra en el cálculo de forma exacta y no importa el valor que
-el firmware traiga fijo. El asistente lo ofrece con una casilla.
+Alternativa exacta: leer con `VoltSE` en vez de `Units = mA`. Ahí el
+shunt efectivo entra en el cálculo tal cual y no importa el valor que el
+firmware traiga fijo. El asistente lo ofrece con una casilla.
 
 **Contadores de pulsos.** El firmware tiene un antirrebote de 50 ms fijo
-(`PULSE_DEBOUNCE_US`, OptaPakBus.ino:433), pensado para el contacto de un
-pluviómetro. Eso pone un techo de **20 pulsos por segundo**. Se cargan los
-pulsos por unidad y el máximo que se espera medir, y el asistente dice si
-entra: un caudalímetro de 450 pulsos/litro a 30 l/min necesita 225 Hz y no
-sirve — con ese medidor el equipo solo puede leer hasta 2,67 l/min, todo
-lo demás se cuenta de menos sin ningún aviso.
+(`PULSE_DEBOUNCE_US`), pensado para el contacto de un pluviómetro. Eso
+pone un techo de **20 pulsos por segundo**. Se cargan los pulsos por
+unidad y el máximo que se espera medir, y el asistente dice si entra: un
+caudalímetro de 450 pulsos/litro a 30 l/min necesita 225 Hz y no sirve —
+con ese medidor el equipo solo puede leer hasta 2,67 l/min, todo lo demás
+se cuenta de menos sin ningún aviso. Para los equipos que se usan en
+terreno sobra: un pluviómetro de cangilones va a 0,8 Hz y un flujómetro
+Bermad DN125 a caudal máximo, a 0,5 Hz.
+
+El código que genera incluye el montaje completo: `ExciteCh` en un borne
+para alimentar el contacto con 3,3 V, el conteo en otro con pull-down de
+10 kΩ al negativo, y `PulseEdge(..., Rising)` que es el flanco que
+corresponde a esa topología. Sin la excitación el contacto no tiene fuente
+y no genera ningún pulso.
 
 Además fuerza `Offset = 0`, porque se suma en **cada scan**: con
 `Totalize` en la tabla, cualquier otro valor acumula un total que nunca
@@ -128,23 +152,44 @@ necesariamente por ese backend.
 
 ## Trampas que detecta y el firmware no reporta
 
-Todas verificadas contra `OptaPakBus.ino`; entre paréntesis, la línea.
+Todas verificadas contra `OptaPakBus.ino` 1.6.12.
 
 | Qué pasa | Por qué |
 |---|---|
-| **Sin `DataTable` el programa no se ejecuta** | `crParsed = (crTableCount > 0)` (2967); en `loop()` (4405) el equipo cae al esquema fijo AI1-AI4/DI1-DI4/DO1-DO4/BattV e ignora todo el `.CR1` |
-| **Una asignación suelta indentada se descarta** | el destino se lee desde la columna 0 (2452) y `cr_find_var()` compara el nombre exacto (506). Las que van dentro de un `If … Then` se salvan porque su destino sale del texto posterior al `Then` |
-| **`Units=mA` + asignación = variable sin canal** | `noAutoPin` solo se revierte para `hasVoltInstr` (2917) |
-| **Un canal pedido a mano se puede repartir dos veces** | `used[]` arranca vacío y nunca marca los canales explícitos ni los de `PulseCount` (2920) |
-| **`Msec` se interpreta como segundos** | `cr_to_sec()` solo conoce MIN/HOU/DAY (2051); `Scan(500, Msec)` son 500 s |
-| **`att` en el nombre + `Units=mA` pierde el A7** | la rama de batería excluye `is4_20mA` (2924) |
-| **`VoltDiff`/`VoltSE` con menos de 6 argumentos ignora Mult/Offset** | (2732) |
-| **Tabla sin `DataInterval` nunca archiva** | `if (tbl->intervalSec > 0)` (3168) |
-| **`PulseCount` no cuenta más de 20 pulsos/s** | antirrebote de 50 ms fijo (433); un caudalímetro de turbina se cuenta muy por debajo de lo real |
-| **El `Offset` de `PulseCount` se suma en cada scan** | `value = cnt * mult + offset` (3060); con `Totalize` inventa un acumulado |
-| **El shunt de 4-20 mA está fijo en 270 Ω** | `SHUNT_OHM` (1168); con otra resistencia la variable en mA no muestra los miliamperes reales |
-| **`Public`/`Dim`/`Units` con sangría** | offsets fijos desde la columna 0 (2598, 2631). `Const` sí tolera sangría (2510) |
-| **Truncados silenciosos** | línea a 127 caracteres, programa a 8192 bytes, argumento a 31, nombre de variable a 23 |
+| **Sin `DataTable` el programa no se ejecuta** | `crParsed = (crTableCount > 0)`; en `loop()` el equipo cae al esquema fijo AI1-AI4/DI1-DI4/DO1-DO4/BattV e ignora todo el `.CR1` |
+| **`Units=mA` + asignación = variable sin canal** | `noAutoPin` solo se revierte para `hasVoltInstr` |
+| **`Msec` se interpreta como segundos** | `cr_to_sec()` solo conoce MIN/HOU/DAY; `Scan(500, Msec)` son 500 s |
+| **`att` en el nombre + `Units=mA` pierde el canal de alimentación** | la rama de batería excluye `is4_20mA`; hay que declararlo con `Battery(Var, N)` |
+| **`att` cuando el borne 8 ya está tomado** | la variable se queda sin canal en vez de pisarlo, y vale 0 |
+| **`VoltDiff`/`VoltSE` con menos de 6 argumentos ignora Mult/Offset** | solo los lee con `nArgs >= 6` |
+| **Tabla sin `DataInterval` nunca archiva** | `if (tbl->intervalSec > 0)` |
+| **`PortSet` sin `N` y con un nombre que no es `DOn`** | queda en el relé 1 por descarte: `isRelay` se marca antes del chequeo del nombre |
+| **`PulseCount` no cuenta más de 20 pulsos/s** | antirrebote de 50 ms fijo; un caudalímetro de turbina se cuenta muy por debajo de lo real |
+| **El `Offset` de `PulseCount` se suma en cada scan** | `value = cnt * mult + offset`; con `Totalize` inventa un acumulado |
+| **`ExciteCh` sobre el borne de conteo** | la salida gana y el contador no ve ningún flanco |
+| **El shunt de 4-20 mA está fijo en 260 Ω** | `SHUNT_OHM`; con otro lazo la variable en mA no muestra los miliamperes reales |
+| **`Public`/`Dim`/`Units` con sangría** | offsets fijos desde la columna 0. `Const` sí tolera sangría |
+| **Truncados silenciosos** | línea a 127 caracteres, programa a 16384 bytes, argumento a 31, nombre de variable a 23 |
+
+### Corregidas en el firmware — el IDE ya no las reporta
+
+Estaban en la versión anterior de este README. Se listan porque un equipo
+que no se haya actualizado las sigue teniendo:
+
+- **Una asignación suelta indentada se descartaba** (hasta 1.6.7). El
+  destino se leía desde la columna 0 y `cr_find_var()` compara exacto, así
+  que `"        Altura_cm"` no coincidía con nada. Las que van dentro de
+  un `If … Then` no estaban afectadas, por eso pasó inadvertido.
+- **Un canal fijado a mano se podía repartir dos veces** (hasta 1.6.8).
+  `used[]` arrancaba vacío y el reparto automático pisaba los canales de
+  `AIChannel`, `VoltSE` y `PulseCount`.
+- **Una expresión que agotaba los 20 tokens se truncaba en silencio**
+  (hasta 1.6.7) si el último token era un `)` que vaciaba la pila.
+- **Un `.CR1` más grande que el buffer se truncaba sin dejar rastro**
+  (hasta 1.6.10).
+- **`Totalize` y `Average` venían sesgados hacia arriba** (hasta 1.6.8):
+  el acumulador se reiniciaba sembrado con el scan recién archivado, que
+  quedaba contado dos veces. Los históricos viejos lo arrastran.
 
 ### Los números de línea del `.HLOG` vienen corridos
 
@@ -173,7 +218,7 @@ optabasic/       motor de análisis, sin dependencias de interfaz
   encoding.py    cp1252 / UTF-8 y fin de línea, sin corromper acentos
 gui/             interfaz PyQt5
 cli.py           linter de consola
-tests/           87 pruebas ancladas al firmware
+tests/           110 pruebas ancladas al firmware
 ejemplos/        los .CR1 reales del repo del firmware
 ```
 

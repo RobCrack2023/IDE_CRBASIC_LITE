@@ -25,7 +25,8 @@ _LITERAL_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 _CON_ARGUMENTOS = {
     "SCAN", "DATATABLE", "DATAINTERVAL", "SAMPLE", "AVERAGE", "MAXIMUM",
     "MINIMUM", "TOTALIZE", "VOLTDIFF", "VOLTSE", "AICHANNEL", "PORTSET",
-    "PULSECOUNT", "BRHALF", "REALTIME", "PANELTEMP", "SW12", "BATTERY",
+    "PULSECOUNT", "PULSEEDGE", "EXCITECH", "BRHALF", "REALTIME", "PANELTEMP",
+    "SW12", "BATTERY",
 }
 
 #: Instrucciones de CRBasic real que el Opta no implementa (manual §17).
@@ -62,61 +63,14 @@ _FUERA_DE_ALCANCE = {
 
 def lint(result: ParseResult) -> ParseResult:
     """Agrega los diagnósticos propios del IDE al resultado del parseo."""
-    rechazadas = _asignaciones(result)
     _estructura(result)
     _lexico(result)
-    _declaraciones(result, rechazadas)
+    _declaraciones(result)
     _hardware(result)
     _tablas(result)
     _condiciones(result)
     _red(result)
     return result
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  Asignaciones sueltas con sangría
-# ─────────────────────────────────────────────────────────────────────────
-def _asignaciones(result: ParseResult) -> "set[str]":
-    """Detecta el destino perdido por la indentación.
-
-    cr_try_parse_stmt() calcula el destino desde la COLUMNA 0 de la línea
-    (OptaPakBus.ino:2452 `dl = eq - line`) y cr_find_var() compara el nombre
-    exacto, sin saltar espacios (:506). Una asignación suelta indentada
-    produce un destino como "        Altura_cm" que no coincide con nada, y
-    el firmware la descarta con "asignacion a variable no declarada".
-
-    Las asignaciones que van dentro de un «If … Then» se salvan porque su
-    destino sale del texto posterior al Then, que ya viene sin sangría. Por
-    eso el problema pasa inadvertido: en un programa típico solo caen las
-    pocas asignaciones que no cuelgan de un If.
-    """
-    prog = result.program
-    afectadas: "set[str]" = set()
-
-    for d in result.diagnostics.items:
-        if d.code != "fw-asign-var":
-            continue
-        pl = next((p for p in result.parsed_lines if p.src.file_no == d.line), None)
-        if pl is None:
-            continue
-        texto = pl.src.text
-        eq = texto.find("=")
-        if eq <= 0:
-            continue
-        destino = texto[:eq].strip()
-        if prog.find_var(destino) is None:
-            continue  # el nombre realmente no existe: el mensaje genérico sirve
-        afectadas.add(destino.upper())
-        d.message = (
-            f"«{destino}» sí está declarada, pero esta asignación tiene sangría y el "
-            "equipo la descarta igual: toma el nombre de destino desde la columna 0, "
-            f"así que busca «{texto[:eq].rstrip()}» (con los espacios adelante) y no "
-            "lo encuentra. Escribí la asignación pegada al margen izquierdo, o metela "
-            "dentro de un «If (...) Then» — ahí el destino sí se lee bien."
-        )
-        d.code = "asignacion-indentada"
-
-    return afectadas
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -286,7 +240,7 @@ def _explicar(result: ParseResult, line_no: int, motivo: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 #  Declaraciones
 # ─────────────────────────────────────────────────────────────────────────
-def _declaraciones(result: ParseResult, rechazadas: "set[str]") -> None:
+def _declaraciones(result: ParseResult) -> None:
     prog, diags = result.program, result.diagnostics
 
     # Public/Dim/Units con sangría: el firmware usa offsets fijos desde la
@@ -373,8 +327,6 @@ def _declaraciones(result: ParseResult, rechazadas: "set[str]") -> None:
             continue
         if v.name.upper() in ("PUBLIC", "DIM", "UNITS"):
             continue  # ya avisado como declaración indentada
-        if v.name.upper() in rechazadas:
-            continue  # su asignación existe pero la rechazó la sangría
         diags.info(
             v.decl_line,
             f"«{v.name}» no lee ninguna entrada ni recibe asignaciones: va a valer 0 "
@@ -420,54 +372,74 @@ def _hardware(result: ParseResult) -> None:
     # Colisiones de canal. used[] arranca en false y NUNCA se marca para los
     # canales explícitos ni para los de PulseCount (OptaPakBus.ino:2920),
     # así que un canal pedido a mano se puede volver a repartir.
-    # Un mismo canal leído por dos variables que lo piden a mano es legítimo
-    # (por ejemplo el valor en mA y el mismo lazo escalado). Lo que no puede
-    # ser deliberado es que el reparto automático caiga encima de uno fijado
-    # a mano, ni que un canal de pulsos comparta borne con uno analógico.
-    ocupantes: "dict[int, list[tuple[str, str, int, bool]]]" = {}
-    for i, v in enumerate(prog.vars):
-        if v.pin >= 0:
-            explicito = i in result.explicit_pins
-            ocupantes.setdefault(v.pin, []).append(
-                (v.name, "analógico", v.decl_line, explicito))
+    # Desde v1.6.9 los canales comprometidos quedan reservados, así que el
+    # reparto automático ya no puede pisarlos. Lo que sí puede seguir
+    # chocando es lo que el propio programa fija dos veces a mano, y ahí hay
+    # que distinguir: dos mediciones del mismo borne es un patrón legítimo
+    # (lo usa programa_diagnostico.CR1), pero mezclar conteo de pulsos o
+    # excitación con una medición no puede funcionar.
+    ocupantes: "dict[int, list[tuple[str, str, int]]]" = {}
+    for v in prog.vars:
+        if not v.is_relay and v.pin >= 0:
+            ocupantes.setdefault(v.pin, []).append((v.name, "medición", v.decl_line))
         if v.is_pulse_count and v.pulse_pin >= 0:
             ocupantes.setdefault(v.pulse_pin, []).append(
-                (v.name, "pulsos", v.decl_line, True))
+                (v.name, "conteo de pulsos", v.decl_line))
+    for canal, linea in prog.excite_channels.items():
+        ocupantes.setdefault(canal, []).append(("ExciteCh", "excitación", linea))
 
     for canal, lista in sorted(ocupantes.items()):
         if len(lista) < 2:
             continue
-        detalle = ", ".join(f"«{n}» ({t})" for n, t, _, _ in lista)
-        hay_pulsos = any(t == "pulsos" for _, t, _, _ in lista)
-        automaticos = [n for n, t, _, e in lista if t == "analógico" and not e]
+        detalle = ", ".join(f"«{n}» ({t})" for n, t, _ in lista)
+        tipos = {t for _, t, _ in lista}
+        linea = lista[-1][2]
 
-        if hay_pulsos:
+        if "excitación" in tipos and "conteo de pulsos" in tipos:
             diags.error(
-                lista[-1][2],
-                f"El canal A{canal} lo usan a la vez {detalle}. Un borne no puede "
-                "contar pulsos y medir una señal analógica al mismo tiempo: el "
-                "equipo no reserva los canales de PulseCount, así que hay que "
-                "correr uno de los dos.",
-                code="colision-canal",
+                linea,
+                f"El canal A{canal} está declarado como excitación y además como "
+                "contador de pulsos. La salida gana y el conteo nunca ve un flanco: "
+                "el equipo lo registra y deja esa variable sin contar. La excitación "
+                "va en un canal y el conteo en otro.",
+                code="excitacion-y-conteo",
             )
-        elif automaticos:
+        elif "excitación" in tipos:
             diags.error(
-                lista[-1][2],
-                f"Colisión en el canal A{canal}: {detalle} lo usan a la vez. Fijar "
-                "un canal a mano NO lo reserva, y el reparto automático se lo volvió "
-                f"a entregar a {', '.join('«' + n + '»' for n in automaticos)}. "
-                "Asignale el canal a mano con AIChannel a todas las variables que "
-                "lean hardware.",
+                linea,
+                f"El canal A{canal} está declarado como excitación con ExciteCh y "
+                f"además mide algo: {detalle}. El borne queda forzado a 3,3 V, así "
+                "que esa medición no significa nada.",
+                code="excitacion-y-medicion",
+            )
+        elif "conteo de pulsos" in tipos and "medición" in tipos:
+            diags.error(
+                linea,
+                f"El canal A{canal} lo usan a la vez {detalle}. Un borne no puede "
+                "contar pulsos y medir una señal analógica al mismo tiempo.",
                 code="colision-canal",
             )
         else:
             diags.info(
-                lista[-1][2],
+                linea,
                 f"{detalle} leen las dos el canal A{canal}. Está bien si es a "
-                "propósito —por ejemplo el lazo en mA y el mismo valor escalado—, "
-                "porque las dos piden ese canal explícitamente.",
+                "propósito —por ejemplo el lazo en mA y el mismo nodo en volts, como "
+                "hace el programa de diagnóstico—, porque las dos lo piden "
+                "explícitamente.",
                 code="canal-compartido",
             )
+
+    # Una variable con «att» que se quedó sin el canal de alimentación.
+    if result.att_sin_canal:
+        v = prog.find_var(result.att_sin_canal)
+        diags.warning(
+            v.decl_line if v else 1,
+            f"«{result.att_sin_canal}» tiene «att» en el nombre, pero A7 ya está "
+            "ocupado, así que no recibe el canal de alimentación y va a quedar en 0. "
+            f"Si el divisor está cableado en otro borne, declaralo con "
+            f"Battery({result.att_sin_canal}, N).",
+            code="att-sin-canal",
+        )
 
     for v in prog.vars:
         # El truco «att» exige que la variable NO sea mA ni VoltDiff
@@ -477,9 +449,10 @@ def _hardware(result: ParseResult) -> None:
             diags.warning(
                 v.decl_line,
                 f"«{v.name}» tiene «att» en el nombre, pero como también tiene "
-                "Units=mA o VoltDiff/VoltSE queda excluida del canal de alimentación: "
-                "no se le aplica el divisor 3.351 de A7 y no va a reportar el voltaje "
-                "real de alimentación.",
+                "Units=mA o VoltDiff/VoltSE queda excluida del truco del nombre: no "
+                "se le aplica el divisor 3.351 y no va a reportar el voltaje real de "
+                f"alimentación. Declaralo explícito con Battery({v.name}, N), que es "
+                "lo que corresponde desde el firmware 1.6.9.",
                 code="att-con-lectura",
             )
         # Relés fuera de rango: el firmware hace n[2]-'1' sin validar.

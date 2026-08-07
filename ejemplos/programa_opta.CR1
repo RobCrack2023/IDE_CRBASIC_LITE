@@ -7,7 +7,7 @@
 '   A1 (AI2) - Sensor caudal     4-20mA  → 0-100 L/min
 '   A2 (AI3) - Sensor nivel      4-20mA  → 0-5 m
 '   A4 (DI1) - Sensor temperatura VoltSE → 0-50 °C (10mV/°C)
-'   A7        - Voltaje fuente (BattV x3.351)
+'   A7 (I8)   - Voltaje fuente (BattV x3.351) — canal elegido con Battery(BattV, 8)
 '   DO1       - Bomba (relé)
 '
 ' Limitaciones del parser Opta:
@@ -79,8 +79,10 @@ BeginProg
     Scan(10, Sec, 0, 0)
 
         '-- Mediciones de hardware ----------------------------------
-        VoltSE(Temp, 1, mV5000, 1, 1, 0, _60Hz, 0.1, 0.0)
-        Battery(BattV)
+        ' Chan=5 -> A4 (I5), el canal declarado en el encabezado
+        VoltSE(Temp, 1, mV5000, 5, 1, 0, _60Hz, 0.1, 0.0)
+        Battery(BattV, 8)       ' divisor de alimentacion cableado en I8 (A7)
+                                ' Battery(BattV) sin canal = A7, igual que antes
         PortSet(Bomba_DO1, 0)
 
         '-- Conversión 4-20mA a unidades de ingeniería --------------

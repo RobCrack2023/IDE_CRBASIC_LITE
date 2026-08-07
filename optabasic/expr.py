@@ -179,6 +179,21 @@ def compile_expr(
 
         return ExprResult(False, error=f'carácter no soportado en una expresión: "{ch}"')
 
+    # Si el bucle salió por agotar los tokens y todavía queda texto, la
+    # expresión está truncada. Desde v1.6.8 el firmware la rechaza: antes,
+    # si el último token era un ')' que vaciaba la pila, se colaba una
+    # expresión a medias que evaluaba cualquier cosa sin avisar
+    # («(A+B+…+K) * 999» perdía el «* 999»).
+    while i < n and expr[i].isspace():
+        i += 1
+    if i < n:
+        return ExprResult(
+            False,
+            error=f"la expresión no entra en {max_tokens} tokens RPN: quedó sin "
+                  f'compilar «{expr[i:i + 20].strip()}…»',
+            tokens=out,
+        )
+
     # ── Drenaje final de la pila de operadores ──────────────────────────
     while op_stack and out < max_tokens:
         if op_stack[-1] == Tok.SENTINEL:

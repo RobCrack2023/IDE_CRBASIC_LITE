@@ -116,12 +116,27 @@ def test_const_si_tolera_indentacion():
     assert r.program.consts[0].value == 2.5
 
 
-def test_asignacion_indentada_pierde_el_destino():
-    """dl = eq - line desde la columna 0 — OptaPakBus.ino:2452 y :506."""
-    fuente = "Public A, B\nDataTable(T,True,1)\nDataInterval(0,1,Min,0)\nSample(1,A,FP2)\nEndTable\n    A = B + 1\n"
+def test_asignacion_indentada_funciona_desde_v1_6_8():
+    """El firmware ahora salta la sangría antes de recortar el destino.
+
+    Hasta v1.6.8 esta línea se descartaba entera: el destino se tomaba
+    desde la columna 0 y cr_find_var() compara exacto.
+    """
+    fuente = ("Public A, B\nDataTable(T,True,1)\nDataInterval(0,1,Min,0)\n"
+              "Sample(1,A,FP2)\nEndTable\n    A = B + 1\n")
     r = analyze(fuente)
-    assert "asignacion-indentada" in codigos(r)
-    assert len(r.program.stmts) == 0
+    assert len(r.program.stmts) == 1
+    assert r.program.stmts[0].dest_var == 0
+    assert "asignacion-indentada" not in codigos(r)
+    assert "fw-asign-var" not in codigos(r)
+
+
+def test_sangria_ya_no_come_caracteres_del_nombre():
+    """Antes la sangría gastaba parte de los 23 caracteres del destino."""
+    nombre = "N" * 23
+    fuente = f"Public {nombre}\n            {nombre} = 1\n"
+    r = parse(fuente)
+    assert len(r.program.stmts) == 1
 
 
 def test_asignacion_dentro_de_if_si_tolera_indentacion():
@@ -146,14 +161,97 @@ def test_units_ma_mas_asignacion_pierde_el_canal():
     assert "units-ma-sin-canal" in codigos(r)
 
 
-def test_canal_explicito_no_se_reserva():
-    """used[] arranca vacío — OptaPakBus.ino:2920."""
+def test_canal_explicito_queda_reservado():
+    """Desde v1.6.9 used[] se pre-marca con los canales comprometidos.
+
+    Antes el reparto secuencial volvía a entregar un canal ya fijado a
+    mano y las dos variables terminaban leyendo el mismo borne.
+    """
     fuente = ("Public Temp\nPublic Caudal\nUnits Caudal = mA\n"
               "VoltSE(Temp, 1, mV5000, 1, 0, 0, 1.0, 0.0)\n")
     r = analyze(fuente)
     assert r.program.find_var("Temp").pin == 0
-    assert r.program.find_var("Caudal").pin == 0
-    assert "colision-canal" in codigos(r)
+    assert r.program.find_var("Caudal").pin == 1
+    assert "colision-canal" not in codigos(r)
+
+
+def test_pulsecount_tambien_reserva_su_canal():
+    fuente = ("Public Lluvia\nPublic Nivel\nUnits Nivel = mA\n"
+              "PulseCount(Lluvia, 1, P1, 2, 0, 0.2, 0.0)\n")
+    r = analyze(fuente)
+    assert r.program.find_var("Lluvia").pulse_pin == 0
+    assert r.program.find_var("Nivel").pin == 1
+
+
+def test_excitech_reserva_el_canal():
+    fuente = "Public Nivel\nUnits Nivel = mA\nExciteCh(1)\n"
+    r = analyze(fuente)
+    assert 0 in r.program.excite_channels
+    assert r.program.find_var("Nivel").pin == 1
+
+
+def test_excitech_fuera_de_rango():
+    assert "fw-excitech-rango" in codigos(analyze("ExciteCh(9)\n"))
+
+
+# ── Battery, real desde v1.6.9 ───────────────────────────────────────────
+def test_battery_con_canal_explicito():
+    r = parse("Public BattV\nBattery(BattV, 3)\n")
+    v = r.program.find_var("BattV")
+    assert v.is_batt_v and v.pin == 2 and v.no_auto_pin
+
+
+def test_battery_sin_canal_usa_el_borne_8():
+    for fuente in ("Public V_alim\nBattery(V_alim)\n",
+                   "Public V_alim\nBattery(V_alim, 0)\n"):
+        v = parse(fuente).program.find_var("V_alim")
+        assert v.is_batt_v and v.pin == 7
+
+
+def test_battery_fuera_de_rango_avisa_y_cae_al_8():
+    r = analyze("Public BattV\nBattery(BattV, 12)\n")
+    assert "fw-battery-rango" in codigos(r)
+    assert r.program.find_var("BattV").pin == 7
+
+
+def test_battery_sin_argumentos_sigue_siendo_noop():
+    r = analyze("Battery()\n")
+    assert not any(d.code.startswith("fw-battery") for d in r.diagnostics)
+
+
+def test_att_pierde_a7_si_esta_ocupado():
+    fuente = "Public Otro\nPublic BattV\nBattery(Otro, 8)\n"
+    r = analyze(fuente)
+    assert r.program.find_var("BattV").pin == -1
+    assert "att-sin-canal" in codigos(r)
+
+
+# ── PulseEdge ────────────────────────────────────────────────────────────
+def test_pulse_edge_por_defecto_es_rising():
+    """El default pasó de FALLING a RISING en v1.6.9."""
+    r = parse("Public L\nPulseCount(L, 1, P1, 2, 0, 0.2, 0.0)\n")
+    assert r.program.find_var("L").pulse_edge == "RISING"
+
+
+@pytest.mark.parametrize("valor,esperado", [
+    ("Rising", "RISING"), ("Subida", "RISING"), ("1", "RISING"),
+    ("Falling", "FALLING"), ("Bajada", "FALLING"), ("0", "FALLING"),
+])
+def test_pulse_edge_acepta_las_dos_formas(valor, esperado):
+    r = parse(f"Public L\nPulseCount(L, 1, P1, 2, 0, 0.2, 0.0)\n"
+              f"PulseEdge(L, {valor})\n")
+    assert r.program.find_var("L").pulse_edge == esperado
+
+
+def test_pulse_edge_valor_invalido():
+    r = analyze("Public L\nPulseCount(L,1,P1,2,0,0.2,0.0)\nPulseEdge(L, Costado)\n")
+    assert "fw-pulseedge-valor" in codigos(r)
+
+
+def test_pulsecount_con_offset_avisa():
+    """El firmware lo registra desde v1.6.9: rompe Totalize."""
+    r = analyze("Public L\nPulseCount(L, 1, P1, 2, 0, 0.2, 1.5)\n")
+    assert "fw-pulse-offset" in codigos(r)
 
 
 def test_battv_toma_a7_por_el_nombre():
@@ -294,20 +392,21 @@ def test_ejemplos_reales_se_parsean(nombre):
     r = analyze(texto)
     assert r.program.vars
     assert r.program.tables
-    # Ambos programas caen en el mismo problema: sus asignaciones sueltas
-    # están indentadas dentro del bloque Scan y el equipo las descarta.
-    assert "asignacion-indentada" in codigos(r)
+    # Con el firmware 1.6.12 los dos programas quedan sin errores: las
+    # asignaciones indentadas ya se leen bien y los canales explícitos
+    # quedan reservados.
+    errores = [d for d in r.diagnostics if d.severity.value == "error"]
+    assert not errores, [f"L{d.line}: {d.message}" for d in errores]
 
 
-def test_compuerta_numeracion_del_hlog():
-    """La línea 116 del archivo es la 103 para el firmware."""
-    ruta = os.path.join(EJEMPLOS, "programa_compuerta.CR1")
+def test_diagnostico_usa_dos_variables_en_el_mismo_canal():
+    """Patrón legítimo: el mismo borne en mA y en volts crudos."""
+    ruta = os.path.join(EJEMPLOS, "programa_diagnostico.CR1")
     if not os.path.exists(ruta):
         pytest.skip("falta el ejemplo")
     from optabasic.encoding import leer
 
     texto, _ = leer(ruta)
     r = analyze(texto)
-    d = next(d for d in r.diagnostics if d.code == "asignacion-indentada")
-    assert d.line == 116
-    assert d.fw_line == 103
+    assert "canal-compartido" in codigos(r)
+    assert "colision-canal" not in codigos(r)

@@ -14,13 +14,15 @@ ESTRUCTURA = [
 DECLARACION = ["Public", "Dim", "Const", "Units", "As"]
 INSTRUCCIONES = [
     "VoltDiff", "VoltSE", "AIChannel", "PortSet", "PulseCount",
+    "PulseEdge", "ExciteCh", "Battery",
     "Sample", "Average", "Maximum", "Minimum", "Totalize",
-    "Battery", "BrHalf", "RealTime", "PanelTemp", "SW12",
+    "BrHalf", "RealTime", "PanelTemp", "SW12",
 ]
 DIRECTIVAS = ["StationName", "ServerHost", "ServerPort", "PakBusAddress"]
 FUNCIONES = ["Abs", "Int", "Sqr"]
 LITERALES = [
     "True", "False", "Sec", "Min", "Hour", "Day", "Msec",
+    "Rising", "Falling", "Subida", "Bajada",
     "FP2", "UINT2", "INT2", "INT4", "Long", "Float", "String", "Boolean",
 ]
 #: Instrucciones de CRBasic real que el Opta NO implementa: se marcan en

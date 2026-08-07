@@ -18,8 +18,10 @@ from optabasic.sensors import (  # noqa: E402
     SHUNT_NOMINAL,
     TASA_MAX_HZ,
     VREF,
+    ZIN,
     calcular_4_20,
     calcular_pulsos,
+    shunt_efectivo,
 )
 
 
@@ -32,56 +34,89 @@ def codigos(resultado):
 
 
 # ── Modelo de lo que hace el firmware, para verificar contra él ──────────
-def ma_que_reporta_el_equipo(corriente_real_ma: float, shunt: float) -> float:
-    """read_mA(): el firmware divide siempre por los 270 Ω que tiene fijos."""
-    volts = corriente_real_ma * shunt / 1000.0
+#
+# La tensión que mide el equipo no cae sobre el resistor del lazo sino sobre
+# el paralelo de ese resistor con la impedancia de entrada del Opta. Y el
+# firmware divide siempre por el shunt efectivo que tiene calibrado.
+def ma_que_reporta_el_equipo(corriente_real_ma: float, resistor: float) -> float:
+    """read_mA(): volts / SHUNT_OHM * 1000, con SHUNT_OHM fijo por código."""
+    volts = corriente_real_ma * shunt_efectivo(resistor) / 1000.0
     return (volts / SHUNT_NOMINAL) * 1000.0
 
 
-def mv_que_reporta_el_equipo(corriente_real_ma: float, shunt: float) -> float:
+def mv_que_reporta_el_equipo(corriente_real_ma: float, resistor: float) -> float:
     """VoltSE escala sobre milivolts: volts * 1000 * Mult + Offset."""
-    return corriente_real_ma * shunt
+    return corriente_real_ma * shunt_efectivo(resistor)
+
+
+def resistor_para(efectivo: float) -> float:
+    """Qué resistor físico hay que poner para obtener ese shunt efectivo."""
+    return efectivo * ZIN / (ZIN - efectivo)
 
 
 # ── 4-20 mA con la resistencia que el firmware asume ─────────────────────
-def test_escala_clasica_coincide_con_el_ejemplo_del_firmware():
-    """El sensor de programa_compuerta.CR1: 30-500 cm sobre 270 Ω."""
-    e = calcular_4_20("Dist", 30.0, 500.0, "cm", shunt=270.0)
+def test_el_resistor_del_esquema_da_el_shunt_calibrado():
+    """R4 de 269 Ω medido con tester → 260 Ω efectivos, que es lo que el
+    firmware tiene calibrado desde la medición de terreno."""
+    assert shunt_efectivo(269.0) == pytest.approx(260.0, abs=0.1)
+
+
+def test_escala_nominal_cuando_el_lazo_da_el_shunt_calibrado():
+    """Con el resistor que da exactamente 260 Ω efectivos, la escala es la
+    fórmula de manual: Mult = span / 16."""
+    e = calcular_4_20("Dist", 30.0, 500.0, "cm", shunt=resistor_para(SHUNT_NOMINAL))
     assert e.mult == pytest.approx(29.375)
     assert e.offset == pytest.approx(-87.5)
 
 
-@pytest.mark.parametrize("shunt", [270.0, 250.0, 220.0, 150.0, 100.0])
-def test_modo_ma_devuelve_el_valor_correcto_con_cualquier_resistencia(shunt):
-    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=shunt)
+@pytest.mark.parametrize("resistor", [269.0, 250.0, 220.0, 150.0, 100.0])
+def test_modo_ma_devuelve_el_valor_correcto_con_cualquier_resistor(resistor):
+    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=resistor)
     for corriente, esperado in ((4.0, 0.0), (12.0, 2.5), (20.0, 5.0)):
-        leido = ma_que_reporta_el_equipo(corriente, shunt)
+        leido = ma_que_reporta_el_equipo(corriente, resistor)
         assert leido * e.mult + e.offset == pytest.approx(esperado, abs=1e-9)
 
 
-@pytest.mark.parametrize("shunt", [270.0, 250.0, 100.0])
-def test_modo_voltse_devuelve_el_valor_correcto(shunt):
-    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=shunt, modo="voltse")
+@pytest.mark.parametrize("resistor", [269.0, 250.0, 100.0])
+def test_modo_voltse_devuelve_el_valor_correcto(resistor):
+    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=resistor, modo="voltse")
     for corriente, esperado in ((4.0, 0.0), (12.0, 2.5), (20.0, 5.0)):
-        mv = mv_que_reporta_el_equipo(corriente, shunt)
+        mv = mv_que_reporta_el_equipo(corriente, resistor)
         assert mv * e.mult + e.offset == pytest.approx(esperado, abs=1e-9)
+
+
+def test_ignorar_la_impedancia_de_entrada_daria_error_de_span():
+    """Si se calculara con el resistor y no con el paralelo, el fondo de
+    escala se iría un 3% — el mismo error que tenía el firmware antes."""
+    resistor = 269.0
+    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=resistor)
+    leido = ma_que_reporta_el_equipo(20.0, resistor)
+
+    # La escala del asistente da el valor exacto.
+    assert leido * e.mult + e.offset == pytest.approx(5.0, abs=1e-9)
+
+    # Calcular con el resistor en vez del paralelo subestima el fondo de
+    # escala más de un 3%: sobre un sensor de 0-5 m son más de 15 cm.
+    ingenuo = 5.0 * SHUNT_NOMINAL / (16.0 * resistor)
+    error = 5.0 - (leido * ingenuo + e.offset)
+    assert 0.03 < error / 5.0 < 0.06
 
 
 def test_rango_de_corriente_no_estandar():
     """Un sensor de 0-20 mA, no de 4-20."""
     e = calcular_4_20("Q", 0.0, 100.0, "l/s", i_min=0.0, i_max=20.0)
     assert e.offset == pytest.approx(0.0)
-    assert ma_que_reporta_el_equipo(20.0, 270.0) * e.mult + e.offset == pytest.approx(100.0)
+    assert ma_que_reporta_el_equipo(20.0, 269.0) * e.mult + e.offset == pytest.approx(100.0)
 
 
 def test_resistencia_distinta_avisa_del_shunt_fijo():
     e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=250.0)
-    assert any("270" in t for _, t in e.avisos)
+    assert any("260" in t for _, t in e.avisos)
 
 
-def test_resistencia_nominal_no_molesta_con_ese_aviso():
-    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=270.0)
-    assert not any("no va a mostrar los miliamperes reales" in t for _, t in e.avisos)
+def test_resistor_del_esquema_no_molesta_con_ese_aviso():
+    e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=269.0)
+    assert not any("NO va a mostrar los miliamperes reales" in t for _, t in e.avisos)
 
 
 def test_resistencia_grande_satura_la_entrada():
@@ -92,9 +127,10 @@ def test_resistencia_grande_satura_la_entrada():
 
 
 def test_el_limite_de_saturacion_esta_donde_corresponde():
-    justo = VREF * 1000.0 / 20.0            # 535 Ω exactos
-    assert ERROR not in niveles(calcular_4_20("N", 0, 5, "m", shunt=justo - 5))
-    assert ERROR in niveles(calcular_4_20("N", 0, 5, "m", shunt=justo + 5))
+    """El límite es sobre el shunt EFECTIVO, no sobre el resistor."""
+    justo = resistor_para(VREF * 1000.0 / 20.0)   # 535 Ω efectivos
+    assert ERROR not in niveles(calcular_4_20("N", 0, 5, "m", shunt=justo - 10))
+    assert ERROR in niveles(calcular_4_20("N", 0, 5, "m", shunt=justo + 10))
 
 
 def test_resistencia_chica_avisa_de_poca_resolucion():
@@ -141,10 +177,11 @@ def test_el_codigo_de_voltse_tambien_pasa_el_linter():
 
 
 def test_umbrales_de_falla_escalados_por_la_resistencia():
-    """Con 250 Ω, 3,5 mA reales se ven como 3,24 en la variable."""
+    """Con un resistor de 250 Ω, 3,5 mA reales se ven más bajos."""
     e = calcular_4_20("Nivel", 0.0, 5.0, "m", shunt=250.0)
-    esperado = 3.5 * 250.0 / SHUNT_NOMINAL
-    assert f"{esperado:.3f}"[:4] in e.codigo
+    esperado = 3.5 * shunt_efectivo(250.0) / SHUNT_NOMINAL
+    assert f"Nivel_Min_mA = {esperado:.3f}" in e.codigo
+    assert esperado < 3.5
 
 
 # ── Contadores de pulsos ─────────────────────────────────────────────────
@@ -218,10 +255,13 @@ def test_dos_canales_explicitos_no_son_error():
     assert "canal-compartido" in codigos(r)
 
 
-def test_automatico_encima_de_explicito_si_es_error():
+def test_el_reparto_automatico_ya_no_pisa_un_canal_explicito():
+    """Desde v1.6.9 los canales comprometidos quedan reservados."""
     fuente = ("Public Temp\nPublic Caudal\nUnits Caudal = mA\n"
               "VoltSE(Temp, 1, mV5000, 1, 0, 0, 1.0, 0.0)\n")
-    assert "colision-canal" in codigos(analyze(fuente))
+    r = analyze(fuente)
+    assert "colision-canal" not in codigos(r)
+    assert r.program.find_var("Caudal").pin == 1
 
 
 def test_pulsos_y_analogico_en_el_mismo_borne_es_error():
@@ -229,5 +269,22 @@ def test_pulsos_y_analogico_en_el_mismo_borne_es_error():
               "AIChannel(Nivel, 1)\nPulseCount(Lluvia, 1, P1, 2, 0, 0.2, 0.0)\n")
     r = analyze(fuente)
     assert "colision-canal" in codigos(r)
-    assert any("pulsos" in d.message for d in r.diagnostics
-               if d.code == "colision-canal")
+
+
+def test_excitacion_y_conteo_en_el_mismo_borne_es_error():
+    fuente = ("Public Lluvia\nExciteCh(1)\n"
+              "PulseCount(Lluvia, 1, P1, 2, 0, 0.2, 0.0)\n")
+    assert "excitacion-y-conteo" in codigos(analyze(fuente))
+
+
+def test_excitacion_encima_de_una_medicion_es_error():
+    fuente = "Public Nivel\nUnits Nivel = mA\nAIChannel(Nivel, 2)\nExciteCh(2)\n"
+    assert "excitacion-y-medicion" in codigos(analyze(fuente))
+
+
+def test_el_codigo_de_pulsos_declara_la_excitacion():
+    """El montaje real necesita ExciteCh: sin fuente no hay pulsos."""
+    e = calcular_pulsos("Lluvia_mm", canal=1, unidad_por_pulso=0.2, unidad="mm")
+    assert "ExciteCh(" in e.codigo
+    assert "PulseEdge(Lluvia_mm, Rising)" in e.codigo
+    assert "ExciteCh(1)" not in e.codigo      # nunca en el mismo borne del conteo

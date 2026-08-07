@@ -28,8 +28,30 @@ programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
   argumentos**, cada uno de hasta **31 caracteres**. Los paréntesis pueden
   anidarse dentro de un argumento (p. ej. una expresión), pero un `)` sin su
   `(` correspondiente corta el argumento ahí mismo.
-- **Programa completo**: se almacena en un buffer de **8192 bytes**
-  (`storedProg[8192]`); un `.CR1` más grande no se acepta completo.
+- **Programa completo**: se almacena en un buffer de **16384 bytes**
+  (`storedProg[]`, ampliado desde 8192 en v1.6.12); un `.CR1` más grande
+  **se trunca**. Ese tamaño cuenta **comentarios incluidos**.
+
+> **El truncamiento era silencioso hasta v1.6.10.** Lo que excedía el buffer
+> se descartaba sin dejar rastro: la transferencia terminaba bien, el
+> servidor daba el programa por cargado, y el equipo parseaba únicamente lo que
+> había entrado. Con un encabezado de comentarios largo se puede perder el
+> `BeginProg` **completo**, y entonces el equipo lee hardware con normalidad
+> pero no ejecuta ni una línea de lógica: las variables calculadas quedan en
+> `0` para siempre. Los síntomas en el log son indirectos — menos tablas de las
+> escritas, `scan=60s` cuando el programa sí traía un `Scan(...)`, o una
+> instrucción cortada al medio reportada como no reconocida.
+>
+> Desde v1.6.11 queda registrado, al recibir el archivo y otra vez al parsear:
+>
+> ```
+> [CRBasic] .CR1 NO ENTRA: se descartan N bytes (buffer 16384)
+> [CRBasic] AVISO: programa TRUNCADO a N bytes, falta el final
+> ```
+>
+> **Verificá el tamaño en bytes antes de cargar un programa.** Y mantené la
+> documentación extensa en un archivo aparte del repositorio, no dentro del
+> `.CR1` — los comentarios ocupan buffer igual que el código.
 - **Indentación**: es puramente cosmética para casi todas las instrucciones
   (el parser busca la palabra clave y el primer `(`/`=` sin importar los
   espacios previos) — **excepto** `Public`/`Dim` y `Units`, que deben
@@ -37,6 +59,17 @@ programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
   registrar una variable espuria o interpretar mal el nombre/unidad. En la
   práctica: declara variables, `Const` y `Units` fuera del bloque `Scan`, sin
   indentar.
+
+> **Hasta v1.6.8 esto no era cierto para las asignaciones simples.** El nombre
+> destino se recortaba de la línea **con la sangría incluida**, y como la
+> búsqueda de variables compara exacto, `        Altura_cm` no coincidía con
+> `Altura_cm`: la asignación se descartaba **entera y en silencio**, dejando la
+> variable en su último valor (`0` si nunca se asignó). Afectaba al estilo
+> normal de escritura, con las asignaciones indentadas dentro del `Scan`. Las
+> asignaciones de una sola línea con `If ... Then` **no** estaban afectadas,
+> porque esas se recortan del texto que sigue al `Then`, que sí venía limpio.
+> De paso, la sangría se comía parte de los 23 caracteres disponibles para el
+> nombre. Corregido en v1.6.9.
 
 ### Diagnóstico de errores de parseo (desde v1.6.3)
 
@@ -60,9 +93,8 @@ formato:
   nuevo) — nunca durante el `Scan()`, así que no afecta en nada el tiempo de
   ejecución del programa, sin importar cuántos errores tenga.
 - Las instrucciones de estructura de CR1000 real que este firmware ignora a
-  propósito (`BeginProg`/`EndProg`/`NextScan`/`CallTable`/`Battery(...)`,
-  ver §2) **no** generan esta advertencia — son un no-op esperado, no un
-  error.
+  propósito (`BeginProg`/`EndProg`/`NextScan`/`CallTable`, ver §2) **no**
+  generan esta advertencia — son un no-op esperado, no un error.
 
 ---
 
@@ -81,7 +113,8 @@ funcionalmente:
 - `CallTable NombreTabla` → no-op. El archivado de cada tabla es
   **automático**, gobernado por su propio `DataInterval` (ver §15) — **no
   hace falta** invocar `CallTable` para que se grabe un registro.
-- `Battery(Var)` → no-op (no reconocida; ver §10 para el equivalente real).
+- `Battery(Var)` **sí se ejecuta** (desde v1.6.8): lee el voltaje de
+  alimentación real. Ver §7.
 
 Todas las demás instrucciones (`Public`, `Dim`, `Const`, `Units`,
 `DataTable`/`EndTable`, asignaciones, `If`) se leen **en el orden del
@@ -169,6 +202,21 @@ Units Dist_mA = mA
   extensión propia del Opta — en un CR1000 real, declarar `Units=mA` no basta
   para leer hardware.
 - Debe escribirse sin indentación (ver nota de §1).
+- La conversión es `mA = volts_del_terminal / SHUNT_OHM × 1000`, con
+  `SHUNT_OHM = 260Ω` desde v1.6.10. Ese **no** es el valor del resistor
+  físico: el shunt de 269Ω del esquema queda en paralelo con los ~7.8kΩ que
+  presenta la entrada del Opta, y parte de la corriente del lazo se va por
+  ahí. Hasta v1.6.9 se dividía por 270 y **todas las lecturas de 4-20mA
+  salían un 3.85% bajas** en todo el rango — ver la nota de calibración al
+  final de esta sección.
+
+> **Recalibración de v1.6.10.** El error era de span, no de cero: crece con
+> la corriente. Sobre un sensor escalado a 0-5 m son unos 15 cm en el fondo
+> de escala; sobre el ultrasónico de la compuerta (`Mult = 29.375 cm/mA`),
+> unos 14 cm a media escala y 23 cm cerca de 20 mA. **Los históricos
+> anteriores a v1.6.10 arrastran ese sesgo**, y si algún equipo se calibró en
+> terreno ajustando su `Offset` contra la lectura vieja, hay que rehacer esa
+> calibración después de actualizar.
 
 ---
 
@@ -208,18 +256,59 @@ Asigna explícitamente la variable `Dest` al canal analógico `N` (1-8 →
 A0-A7), sin depender del orden de declaración ni de `VoltDiff`/`VoltSE`.
 Funciona tanto para variables `mA` como de voltaje.
 
+### `Battery` — voltaje de alimentación
+
+```
+Battery(Dest)       ' divisor cableado en A7 (I8) — valor por defecto
+Battery(Dest, N)    ' divisor cableado en el canal N (1-8 → A0-A7 / I1-I8)
+```
+
+Lee la entrada analógica indicada y le aplica el **factor del divisor
+resistivo** 2×10kΩ, devolviendo el voltaje de alimentación en vez del voltaje
+del terminal. La conversión es `V = cuentas_ADC × 10.0 / 4095 × 3.351`
+(fondo de escala ~33.5 V).
+
+> Ojo: esta rama usa un fondo de escala de **10.0 V**, no el `OPTA_VREF=10.70`
+> que usan `VoltSE`/`Units=mA`. El par `10.0` + `3.351` viene calibrado en
+> conjunto contra el hardware real, así que no se pueden mezclar con el
+> escalado de las otras instrucciones.
+
+- `Dest` (arg 0): variable destino (debe estar declarada antes).
+- `N` (arg 1, **extensión propia del Opta**): canal donde está cableado el
+  divisor, `1`→A0 (I1) … `8`→A7 (I8). Hasta v1.6.7 el divisor estaba fijo en
+  A7; ahora puede ir en cualquiera de las ocho entradas.
+- Si se omite `N`, o si vale `0` (el argumento `Option` de un `Battery(Dest,0)`
+  de CR1000 real), se usa **A7** — así los programas que ya existían siguen
+  comportándose igual.
+- El canal elegido queda **reservado**: no entra en la asignación automática,
+  así que ninguna otra variable se lo puede llevar.
+- `N` fuera del rango 1-8 se registra como advertencia de parseo (§1) y cae a
+  A7.
+
+> **Importante:** el factor `3.351` es del divisor **físico** del cableado, no
+> del canal. Poner `Battery(Dest, 3)` sin haber cableado el divisor en I3 da
+> una lectura 3.351× más alta que el voltaje real de esa entrada. A la inversa,
+> un canal con divisor leído con `VoltSE`/`Units=mA` da un valor 3.351× bajo.
+
 ### Asignación automática de canales A0-A7
 
 Al terminar de parsear el programa:
 
-1. Cualquier variable cuyo nombre contenga la subcadena `att` (mayúscula o
-   minúscula, p. ej. `BattV`, `Batt_Volt`) y que no tenga ya canal asignado
-   se reserva el canal **A7** como voltaje de alimentación (factor divisor
-   `3.351`), con prioridad sobre el resto.
-2. El resto de variables que efectivamente leen hardware (tienen
+1. Los canales fijados **explícitamente** (`Battery(...,N)`, `AIChannel`,
+   `VoltDiff`/`VoltSE` con `Chan` entre 1 y 8) quedan reservados y se excluyen
+   del reparto automático.
+2. *Fallback histórico:* la **primera** variable cuyo nombre contenga la
+   subcadena `att` (mayúscula o minúscula, p. ej. `BattV`, `Batt_Volt`) y que
+   no tenga ni canal ni instrucción de lectura se reserva **A7** como voltaje
+   de alimentación, con prioridad sobre el reparto secuencial. Una variable
+   que ya pasó por `Battery(...)` tiene canal, así que no entra acá. Si A7 ya
+   está tomado, la asignación **no** ocurre y queda registrada en el log
+   (`A7 ocupado, sin BattV`): en ese caso hay que declarar el canal
+   explícitamente con `Battery(Dest, N)`.
+3. El resto de variables que efectivamente leen hardware (tienen
    `VoltDiff`/`VoltSE` o `Units=mA`) y no tienen canal ya asignado reciben,
    en **orden de declaración**, el siguiente canal A0-A7 libre.
-3. Variables declaradas pero sin ninguna instrucción de lectura (sensores
+4. Variables declaradas pero sin ninguna instrucción de lectura (sensores
    "comentados" o no usados) **no consumen canal**: quedan con valor `0`
    permanente.
 
@@ -249,20 +338,102 @@ PortSet(Dest, val, N)       ' relé N (1-4) explícito
 
 ```
 PulseCount(Dest, Reps, Channel, PConfig, POption, Mult, Offset)
+PulseEdge(Dest, Rising|Falling)   ' extensión propia, opcional
+ExciteCh(N)                       ' extensión propia, alimenta el sensor
 ```
 
 - `Dest` (arg 0): variable destino.
 - `Channel` (arg 2): `P1`-`P8` o `1`-`8` → canal A0-A7 configurado como
-  entrada con interrupción por **flanco de bajada** (`FALLING`), con
-  antirrebote de **50 ms** por software — pensado para contacto seco (p. ej.
-  pluviómetro de cangilones). Requiere **pull-up externo** de ~10kΩ a 3.3V
-  (el pull-up interno del STM32 no llega al terminal por el divisor 0-10V
-  del hardware del Opta).
+  entrada con interrupción, con antirrebote de **50 ms** por software.
 - `Mult`/`Offset` (args 5 y 6): `valor = pulsos_del_scan × Mult + Offset`.
   El conteo se resetea a 0 en cada scan (es decir, `valor` es "pulsos desde
   el último scan", no un acumulado total).
-- `Reps` y `PConfig`/`POption` (args 1, 3, 4) se ignoran — el tipo de flanco
-  y demás opciones son siempre las fijas arriba descritas.
+- `Reps` y `PConfig`/`POption` (args 1, 3, 4) se ignoran.
+- El canal queda **reservado**: no se reparte a ninguna variable de medición.
+
+### Cableado y flanco
+
+El montaje del esquema IP-230 no usa pull-up: un canal analógico puesto como
+**salida de excitación** (`ExciteCh`) entrega ~3.3 V al contacto del sensor, y
+el canal de conteo lleva un **pull-down externo de 10kΩ al NEGATIVO** que fija
+el reposo en 0 V. Cada cierre del contacto sube el nodo → el flanco que hay
+que contar es el de **subida**.
+
+Por eso el flanco por defecto es `RISING` (hasta v1.6.7 era `FALLING`, para un
+montaje con pull-up que este hardware no usa). `PulseEdge(Dest, Falling)` lo
+cambia si tu cableado es el inverso. Acepta `Rising`/`Subida`/`1` y
+`Falling`/`Bajada`/`0`.
+
+`ExciteCh(N)` pone el canal `N` (1-8 → A0-A7 / I1-I8) como salida digital en
+alto de forma permanente. **Sin esta línea el sensor no tiene de dónde sacar
+tensión y no genera ningún pulso.** No declares el mismo canal como `ExciteCh`
+y como `Channel` de un `PulseCount`: la salida gana, el conteo queda muerto y
+se registra el aviso en el log.
+
+> **Verificá con multímetro** el nodo de la entrada de conteo con el contacto
+> cerrado. Esos 3.3 V salen a través de la red divisora de la entrada del Opta,
+> así que tienen impedancia de fuente alta; con el pull-down de 10kΩ colgando,
+> el nodo puede quedar bastante por debajo de 3.3 V. Medí el circuito armado,
+> no la salida en vacío.
+
+### Ritmo máximo
+
+El antirrebote de 50 ms topea el conteo en **20 pulsos/s**. Los equipos de
+terreno están muy por debajo:
+
+| Equipo | Ritmo máximo | Período |
+|---|---|---|
+| Pluviómetro de cangilones | 50 tips/min (0.83 Hz) | 1.2 s |
+| Flujómetro Bermad DN125, 1 pulso/100 L | 29 tips/min (0.49 Hz) | 2.05 s |
+| Flujómetro Bermad DN125, 1 pulso/1000 L | 3 tips/min (0.05 Hz) | 20.6 s |
+
+### Cómo archivar el conteo (importante)
+
+Como `Dest` vale "pulsos desde el último scan", con sensores tan lentos la
+mayoría de los scans valen `0`. Un campo `Sample` archivaría casi siempre cero
+y perderías el volumen: **hay que usar `Totalize`**, que suma todos los scans
+del intervalo.
+
+Con `Totalize`, el `Offset` de `PulseCount` tiene que ser **`0`**. Como
+`valor = pulsos × Mult + Offset` se evalúa en todos los scans, un offset
+distinto de cero se suma aunque no haya pulsos e infla el total; el parser lo
+avisa en el log.
+
+Si además querés un acumulado corriente dentro del programa:
+
+```
+Volumen_m3 = Volumen_m3 + Pulsos * 0.1
+```
+
+Ojo que eso vive en RAM y se pierde al reiniciar. No hace falta persistirlo: la
+tabla histórica ya guarda los volúmenes por intervalo en flash y sobreviven al
+corte, así que el acumulado se reconstruye sumándolos. Un total persistido, en
+cambio, escondería los pulsos que ocurrieron mientras el equipo estuvo sin
+energía detrás de un número que parece continuo.
+
+### Ejemplo completo — flujómetro de 1 pulso/100 L
+
+```
+Public Pulsos, Volumen_m3
+Units Volumen_m3 = m3
+
+DataTable(Caudal, True, 8760)
+    DataInterval(0, 1, Hour, 0)
+    Totalize(1, Pulsos, FP2)      ' m3 de la hora (Mult ya convirtio)
+    Sample(1, Volumen_m3, FP2)    ' acumulado corriente (se pierde al reiniciar)
+EndTable
+
+BeginProg
+    Scan(10, Sec, 0, 0)
+        ExciteCh(3)                              ' I3 alimenta el contacto
+        PulseCount(Pulsos, 1, 4, 0, 0, 0.1, 0)   ' cuenta en I4, 0.1 m3/pulso
+        Volumen_m3 = Volumen_m3 + Pulsos
+    NextScan
+EndProg
+```
+
+Con `Mult = 0.1`, `Pulsos` ya viene en m³ por scan, y el `Totalize` de la tabla
+archiva los m³ de cada hora.
 
 ---
 
@@ -275,10 +446,10 @@ BrHalf(...) | RealTime(...) | PanelTemp(...) | SW12(...)
 Se identifica la instrucción y, si trae una variable destino como primer
 argumento, esa variable se marca "sin canal propio" (no roba un A0-A7) — pero
 **no se simula ninguna lectura**: la variable queda en `0` salvo que otra
-parte del programa la asigne. `Battery(Var)` ni siquiera se reconoce como
-palabra clave (usar el patrón `att` en el nombre + `VoltDiff`/`Units=mA`, o
-directamente una variable llamada con `att`, para obtener `BattV` real — ver
-§7).
+parte del programa la asigne.
+
+`Battery(...)` **ya no** está en esta lista: desde v1.6.8 lee hardware de
+verdad y acepta el canal como segundo argumento (ver §7).
 
 ---
 
@@ -317,7 +488,11 @@ El compilador de expresiones (`cr_compile_expr`, Shunting-Yard → RPN) soporta:
 - Máximo **20 tokens** por expresión compilada (`CR_MAX_EXPR_TOKENS`) y pila
   de operadores de hasta 20 niveles — una expresión demasiado larga o con
   demasiados paréntesis anidados simplemente **no compila** y la asignación
-  se descarta.
+  se descarta. Hasta v1.6.8 había un caso que se colaba: si los 20 tokens se
+  agotaban justo con un `)` que vaciaba la pila de operadores, el resto de la
+  expresión se descartaba en silencio y la parte compilada se evaluaba igual
+  (p. ej. `(A+B+...+K) * 999` perdía el `* 999`). Desde v1.6.9 se rechaza y
+  queda en el log.
 - Cualquier expresión que el compilador no reconozca (dos operandos
   seguidos, identificador no declarado, paréntesis desbalanceados, etc.)
   hace que **toda la instrucción se descarte**. Desde v1.6.3 esto queda
@@ -336,13 +511,26 @@ Altura_cm = Dist_Cerrada_cm - (Dist_mA * Dist_Mult + Dist_Off)
 - `Destino = expresión`, donde `Destino` debe ser una variable ya declarada
   (`Public`/`Dim`). Si no existe, la línea se ignora (registrado en el
   `.HLOG` como `"asignacion a variable no declarada"`, ver §1).
+- **Si el equipo corre un firmware ≤v1.6.8, esta instrucción no funciona
+  indentada** — que es como se escribe normalmente, dentro del `Scan`. El
+  nombre destino se recortaba con la sangría incluida y no encontraba la
+  variable, así que la línea se descartaba y el destino quedaba en `0`. Ver
+  la nota de §1. No afectaba a las asignaciones dentro de un `If ... Then`.
 - Toda variable que aparezca como destino de una asignación queda marcada
   `noAutoPin` (no participa de la asignación automática de canal, salvo que
   también tenga una instrucción `VoltDiff`/`VoltSE` real, en cuyo caso esa
   gana).
-- Máximo **32 instrucciones totales** en todo el programa
-  (`CR_MAX_STMTS=32`), contando asignaciones **y** cada `If`/`ElseIf`/`Else`/
-  `EndIf` como una instrucción cada uno.
+- Máximo **64 instrucciones totales** en todo el programa (`CR_MAX_STMTS=64`,
+  eran 32 hasta v1.6.11), contando asignaciones **y** cada
+  `If`/`ElseIf`/`Else`/`EndIf` como una instrucción cada uno.
+
+> **Este es el techo real de complejidad de un programa**, no el tamaño del
+> archivo. El buffer de 16 KB da para mucho más texto del que 64 instrucciones
+> pueden ocupar, así que lo que llena un `.CR1` son los comentarios, no la
+> lógica. Antes de ampliar nada, medí contra este límite:
+> `programa_compuerta.CR1` llenaba el buffer de 8 KB con un 63% de comentarios
+> usando solo 2.7 KB de código real — pero ya gastaba 28 de sus 32
+> instrucciones.
 
 ---
 
@@ -445,6 +633,12 @@ EndTable
   - `Totalize`: suma acumulada entre archivados.
   - `Sample` (y cualquier palabra clave no reconocida): último valor
     instantáneo al momento de archivar.
+  - Cada intervalo arranca con el acumulador **vacío**. Hasta v1.6.7 se
+    sembraba con el valor del scan que se acababa de archivar, así que ese
+    scan se contaba dos veces y `Totalize` se iba hacia arriba en ~1/n_scans
+    por intervalo (17% con 6 scans por intervalo, 3.3% con 30). `Average`
+    tenía el mismo sesgo, con un término de más sobre el mismo divisor.
+    **Los históricos anteriores a v1.6.8 arrastran ese error.**
 - Máximo **4 tablas** (`CR_MAX_TABLES`) de hasta **32 campos** cada una
   (`CR_MAX_FIELDS`).
 - Cada tabla definida se persiste en su propio archivo en LittleFS
@@ -461,16 +655,18 @@ EndTable
 
 | Recurso | Límite | Constante |
 |---|---|---|
-| Tamaño del programa `.CR1` | 8192 bytes | `storedProg[8192]` |
+| Tamaño del programa `.CR1` | 16384 bytes (**comentarios incluidos**) | `storedProg[]` |
 | Longitud de línea | 127 caracteres | — |
 | Argumentos por instrucción | 12, de hasta 31 caracteres c/u | — |
 | Variables (`Public`+`Dim`) | 64 | `CR_MAX_VARS` |
 | Constantes (`Const`) | 16 | `CR_MAX_CONSTS` |
 | Tablas (`DataTable`) | 4 | `CR_MAX_TABLES` |
 | Campos por tabla | 32 | `CR_MAX_FIELDS` |
-| Instrucciones (asignaciones + If/ElseIf/Else/EndIf) | 32 | `CR_MAX_STMTS` |
+| Instrucciones (asignaciones + If/ElseIf/Else/EndIf) | 64 | `CR_MAX_STMTS` |
 | Tokens por expresión compilada | 20 | `CR_MAX_EXPR_TOKENS` |
 | Profundidad de anidamiento `If` | 2 niveles | `CR_IF_MAX_DEPTH` |
+| Canales analógicos A0-A7 (medición + pulso + excitación) | 8 en total | — |
+| Ritmo de conteo de `PulseCount` | 20 pulsos/s | `PULSE_DEBOUNCE_US` |
 | Nombre de variable/tabla/campo | 23 caracteres | — |
 | Nombre de constante | 19 caracteres | — |
 | Nombre de estación (`StationName`) | 23 caracteres | — |
@@ -526,6 +722,26 @@ del parser — los límites reales son los de la §16 de este manual).
 - [ ] No indentar `Public`/`Dim`/`Units`.
 - [ ] `CallTable` puede dejarse por legibilidad, pero no es necesario — el
       archivado es automático por `DataInterval`.
+- [ ] Si el divisor de alimentación está cableado en una entrada que **no**
+      es I8/A7, declararlo con `Battery(Dest, N)` (§7). Hasta v1.6.7 el canal
+      estaba fijo en A7 y no había forma de moverlo.
+- [ ] Revisar los `Chan` explícitos (`VoltDiff`/`VoltSE`/`AIChannel`/
+      `Battery`/`PulseCount`/`ExciteCh`): desde v1.6.8 un canal fijado a mano
+      queda **reservado** y la asignación automática ya no se lo puede volver
+      a entregar a otra variable. Si un programa dependía de ese solapamiento,
+      las variables automáticas se corren un canal.
+- [ ] Si hay un sensor de pulsos (pluviómetro, flujómetro), archivar el conteo
+      con `Totalize`, nunca con `Sample` (§9). Si la excitación sale de un
+      canal del Opta y no de una fuente externa, agregar el `ExciteCh(N)` —
+      sin esa línea no cuenta nada.
+- [ ] **Si el equipo viene de un firmware ≤v1.6.8**, revisar todas las
+      asignaciones simples indentadas: hasta esa versión se descartaban en
+      silencio y la variable quedaba en `0`. Revisá los históricos de esos
+      equipos antes de darlos por buenos (§1).
+- [ ] **Si el equipo viene de ≤v1.6.9 y usa sensores 4-20mA**, sus lecturas
+      venían un 3.85% bajas. Al actualizar, rehacer cualquier calibración de
+      terreno que se haya hecho ajustando `Offset` contra la lectura vieja
+      (§6).
 - [ ] Verificar que cada nombre de variable usado en `Sample`/`Average`/etc.
       esté realmente declarado (`Public`/`Dim`) — un typo deja un campo que
       siempre vale `0` (desde v1.6.3 esto y cualquier otra línea ignorada

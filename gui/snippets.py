@@ -86,12 +86,18 @@ ElseIf (Nivel > Nivel_Alto) Then
 EndIf
 """
 
-PLUVIOMETRO = """'-- Pluviometro de cangilones en P<N> -----------------------------
-' Contacto seco: necesita pull-up EXTERNO de 10k a 3.3V.
-' El conteo se reinicia en cada scan, asi que el valor son los pulsos
-' del ultimo scan, no un acumulado.
+PLUVIOMETRO = """'-- Pluviometro de cangilones -------------------------------------
+' Montaje: I2 excita el contacto con 3.3V y el borne de conteo (P1)
+' lleva un pull-down de 10k al NEGATIVO. En reposo el nodo esta en 0V
+' y cada volcada lo sube, asi que el flanco es de subida.
+' El conteo se reinicia en cada scan: el valor son los pulsos del
+' ultimo scan, no un acumulado. En la tabla va con Totalize.
+' El Offset va en 0: se suma en CADA scan y rompe el Totalize.
 Public Lluvia_mm
+Units Lluvia_mm = mm
+ExciteCh(2)
 PulseCount(Lluvia_mm, 1, P1, 2, 0, 0.2, 0.0)
+PulseEdge(Lluvia_mm, Rising)
 """
 
 TABLA_DATOS = """DataTable(NombreTabla, True, 10080)
@@ -117,9 +123,11 @@ If (Variable > Umbral) Then Salida = 1
 """
 
 BATERIA = """'-- Voltaje de alimentacion ---------------------------------------
-' Cualquier variable con "att" en el nombre toma A7 con el divisor
-' 3.351. No debe tener Units=mA ni VoltDiff/VoltSE, o pierde el truco.
+' Battery(Var, N) indica en que borne esta cableado el divisor.
+' Sin el segundo argumento usa el 8, que era el canal fijo hasta el
+' firmware 1.6.8. El canal queda reservado.
 Public BattV
+Battery(BattV, 8)
 """
 
 PLANTILLAS = [
