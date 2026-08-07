@@ -1,7 +1,7 @@
 # IDE OptaBasic
 
 Un programa para Windows que te ayuda a escribir los programas de las
-estaciones Arduino Opta, y te avisa de los errores **antes** de subirlos
+estaciones Opta PLC, y te avisa de los errores **antes** de subirlos
 al equipo.
 
 ## El problema que resuelve
