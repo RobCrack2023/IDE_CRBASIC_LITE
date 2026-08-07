@@ -137,11 +137,40 @@ GET  /api/loggers                             → lista de equipos
 POST /api/loggers/{id}/files/upload?run_now=  → FileDownload + FileControl
 ```
 
+## El ejecutable de Windows
+
+`run.bat exe` genera `dist\IDE_OptaBasic.exe` con PyInstaller, en un solo
+archivo. La receta está en `IDE_OptaBasic.spec`.
+
+El grueso del tamaño es PyQt5, así que el `.spec` excluye los módulos de
+Qt que el programa no usa —WebEngine, Qml, Quick, Multimedia, Sql y una
+docena más—, lo que baja el ejecutable a menos de la mitad. Si alguna vez
+el `.exe` falla al arrancar con un `ImportError` de Qt, el culpable está
+en esa lista.
+
+UPX queda desactivado a propósito: comprime bastante pero dispara falsos
+positivos de antivirus, y este ejecutable ya arranca con la desventaja de
+no estar firmado.
+
+El icono se dibuja por código —`herramientas/generar_icono.py`— y se arma
+el `.ico` a mano juntando siete PNG de 16 a 256 píxeles. Se puede
+regenerar con `run.bat icono`.
+
+> **Los `.bat` tienen que quedar con CRLF.** Con saltos Unix, `cmd.exe` se
+> desincroniza al procesar un `goto`: calcula el desplazamiento del
+> archivo asumiendo dos bytes por salto de línea, y a partir de ahí lee
+> cada línea corrida un byte —`rem` se convierte en `em` y el script
+> muere. El `.gitattributes` fuerza `*.bat text eol=crlf` justamente por
+> esto, pero un archivo editado en el árbol de trabajo puede quedar en LF
+> sin que git lo note hasta el próximo checkout.
+
 ## Estructura
 
 ```
-run.bat          lanzador unico: IDE, linter, pruebas e instalacion
+run.bat          lanzador unico: IDE, linter, pruebas, exe e instalacion
 main.py          punto de entrada del IDE
+IDE_OptaBasic.spec   receta de PyInstaller
+herramientas/    generador del icono
 optabasic/       motor de análisis, sin dependencias de interfaz
   limits.py      los #define del firmware, en un solo lugar
   cutil.py       atof/atoi/strncpy con la semántica de C

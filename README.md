@@ -28,6 +28,26 @@ Necesitás Python instalado. Después, una sola vez:
 run.bat setup
 ```
 
+### Si preferís no instalar nada
+
+Podés armar un ejecutable suelto:
+
+```bat
+run.bat exe
+```
+
+Tarda un par de minutos y deja `dist\IDE_OptaBasic.exe`. **Ese archivo
+solo ya es el programa completo**: se copia a otra máquina —o a un
+pendrive— y anda sin Python ni nada más instalado.
+
+Dos cosas a tener en cuenta. Pesa unos 43 MB, porque adentro va todo lo
+que necesita. Y al abrirlo tarda unos segundos más que un programa
+instalado, porque se descomprime solo cada vez que arranca.
+
+Si Windows Defender lo marca como sospechoso la primera vez, es un falso
+positivo habitual con este tipo de ejecutables: no está firmado con un
+certificado, y eso alcanza para que desconfíe.
+
 ## Cómo se usa
 
 Doble clic en `run.bat` y se abre el editor. También podés arrastrarle un
@@ -41,6 +61,7 @@ Desde la consola:
 | `run.bat programa.CR1` | abre el editor con ese archivo |
 | `run.bat lint programa.CR1` | lo revisa y muestra el resultado en la consola |
 | `run.bat setup` | instala lo que hace falta |
+| `run.bat exe` | arma el ejecutable suelto |
 | `run.bat ayuda` | lista estas opciones |
 
 ## Un recorrido rápido

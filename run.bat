@@ -32,6 +32,8 @@ rem ---- Elegir que hacer segun el primer argumento -------------------
 if /i "%~1"=="test"   goto :test
 if /i "%~1"=="lint"   goto :lint
 if /i "%~1"=="setup"  goto :setup
+if /i "%~1"=="exe"    goto :exe
+if /i "%~1"=="icono"  goto :icono
 if /i "%~1"=="ayuda"  goto :ayuda
 if /i "%~1"=="-h"     goto :ayuda
 if /i "%~1"=="--help" goto :ayuda
@@ -119,6 +121,52 @@ goto :fin
 
 
 rem ===================================================================
+:exe
+call :comprobar_pyqt
+if errorlevel 1 goto :fin
+
+%PY% -c "import PyInstaller" >nul 2>&1
+if errorlevel 1 (
+    echo Falta PyInstaller, que es lo que arma el ejecutable. Instalando...
+    %PY% -m pip install pyinstaller
+    if errorlevel 1 (
+        echo.
+        echo   Fallo la instalacion de PyInstaller.
+        set "CODIGO=1"
+        goto :fin
+    )
+)
+
+if not exist icono.ico (
+    echo Generando el icono...
+    %PY% herramientas\generar_icono.py
+)
+
+echo.
+echo Compilando. Tarda un par de minutos la primera vez...
+echo.
+%PY% -m PyInstaller IDE_OptaBasic.spec --noconfirm --clean
+if errorlevel 1 (
+    echo.
+    echo   Fallo la compilacion. Mirá los mensajes de arriba.
+    set "CODIGO=1"
+    goto :fin
+)
+echo.
+echo   Listo: dist\IDE_OptaBasic.exe
+echo   Ese archivo solo ya es el programa completo: se puede copiar a
+echo   otra maquina sin instalar Python ni nada mas.
+goto :fin
+
+
+rem ===================================================================
+:icono
+%PY% herramientas\generar_icono.py
+set "CODIGO=%ERRORLEVEL%"
+goto :fin
+
+
+rem ===================================================================
 :ayuda
 echo.
 echo   IDE OptaBasic - editor y validador de CRBasic-lite para Arduino Opta
@@ -128,6 +176,7 @@ echo     run.bat programa.CR1        abre el IDE con ese archivo
 echo     run.bat lint programa.CR1   analiza por consola y sale
 echo     run.bat test                corre las pruebas
 echo     run.bat setup               instala las dependencias
+echo     run.bat exe                 arma dist\IDE_OptaBasic.exe
 echo     run.bat ayuda               esta ayuda
 echo.
 echo   Tambien podes soltar un archivo .CR1 encima de run.bat.
