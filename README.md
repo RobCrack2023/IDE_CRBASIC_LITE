@@ -48,8 +48,8 @@ que sirve tal cual para un hook de commit o para CI.
 
 ```bash
 pip install -r requirements.txt
-python main.py ejemplos/programa_compuerta.CR1
-python cli.py ejemplos/programa_compuerta.CR1 --recursos --hardware --hlog
+python main.py mi_programa.CR1
+python cli.py mi_programa.CR1 --recursos --hardware --hlog
 python -m pytest tests -q
 ```
 
@@ -238,9 +238,13 @@ optabasic/       motor de análisis, sin dependencias de interfaz
   encoding.py    cp1252 / UTF-8 y fin de línea, sin corromper acentos
 gui/             interfaz PyQt5
 cli.py           linter de consola
-tests/           110 pruebas ancladas al firmware
-ejemplos/        los .CR1 reales del repo del firmware
+tests/           118 pruebas ancladas al firmware
 ```
+
+Los programas `.CR1` no se versionan: llevan la configuración de red real
+de cada equipo. Para las pruebas que contrastan contra programas de
+terreno, copiar los del repo del firmware a una carpeta `ejemplos/`; si no
+están, esas pruebas se saltean solas.
 
 ## Pruebas
 

@@ -21,10 +21,13 @@ dist/
 .idea/
 *.swp
 
-# Programas de prueba sueltos en la raiz. Los .CR1 que son parte del
-# proyecto van en ejemplos/, que si se versiona.
-/*.CR1
-/*.cr1
+# Programas .CR1: no se versionan. Llevan la configuracion de red real de
+# cada equipo (ServerHost, ServerPort, PakBusAddress), que no tiene por que
+# estar publicada. Para probar el IDE, copiar los del repo del firmware a
+# la carpeta ejemplos/ -- las pruebas los usan si estan y se saltean si no.
+*.CR1
+*.cr1
+*.CR1X
 
 # Sistema
 Thumbs.db

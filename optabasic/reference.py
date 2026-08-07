@@ -155,7 +155,7 @@ CATALOGO: "list[Instr]" = [
             "firmware sirve para todos los equipos: cada uno lleva su "
             "configuración de red en su propio programa. Máximo 63 caracteres."
         ),
-        ejemplo="ServerHost=loggerip.ingproy.com",
+        ejemplo="ServerHost=servidor.ejemplo.com",
     ),
     Instr(
         nombre="ServerPort",
@@ -168,7 +168,7 @@ CATALOGO: "list[Instr]" = [
             "Es la línea más importante de las cuatro: que exista es lo que "
             "marca al equipo como «ya provisionado»."
         ),
-        ejemplo="ServerPort=6786",
+        ejemplo="ServerPort=6785",
         trampa=(
             "Sin esta línea el equipo se considera sin provisionar y se conecta "
             "al puerto de provisión (4789) en vez del operativo, así que los "

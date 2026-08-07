@@ -131,7 +131,6 @@ echo     run.bat setup               instala las dependencias
 echo     run.bat ayuda               esta ayuda
 echo.
 echo   Tambien podes soltar un archivo .CR1 encima de run.bat.
-echo   Hay programas de ejemplo en la carpeta "ejemplos".
 echo.
 goto :fin
 

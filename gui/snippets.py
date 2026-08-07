@@ -16,8 +16,9 @@ PROGRAMA_NUEVO = """'===========================================================
 StationName=MiEstacion
 
 '-- Config de red: cada .CR1 lleva la de su propio equipo --------
-ServerHost=loggerip.ingproy.com
-ServerPort=6786                  ' sin esta linea el equipo va al puerto de provision
+' AJUSTAR los tres valores a los del servidor y el logger reales.
+ServerHost=servidor.ejemplo.com
+ServerPort=6785                  ' sin esta linea el equipo va al puerto de provision
 PakBusAddress=1                  ' debe coincidir con el node_id del servidor
 
 '-- Calibracion (solo literales numericos, sin expresiones) ------
