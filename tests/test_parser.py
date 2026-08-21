@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from optabasic import analyze, parse  # noqa: E402
 from optabasic.expr import compile_expr  # noqa: E402
 from optabasic.lexer import args_of, keyword, paren, split_lines  # noqa: E402
+from optabasic.model import StmtType  # noqa: E402
 
 EJEMPLOS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "ejemplos")
@@ -268,14 +269,42 @@ def test_battv_con_units_ma_pierde_el_truco():
     assert "att-con-lectura" in codigos(r)
 
 
-def test_portset_infiere_el_rele_del_nombre():
-    r = parse("Public DO3\nPortSet(DO3, 0)\n")
-    assert r.program.find_var("DO3").relay_idx == 2
+def test_portset_es_un_statement_ejecutable():
+    """Desde v1.7.0 PortSet(Rele, Valor) es una instrucción, no un vínculo."""
+    r = parse("Public Bomba\nPortSet(2, Bomba)\n")
+    st = r.program.stmts[-1]
+    assert st.type == StmtType.PORTSET
+    assert st.relay == 1                 # relé 2 → índice 1
+    assert st.expr_text == "Bomba"
+    assert r.program.relay_map()[1] == [st]
 
 
-def test_portset_explicito_gana():
-    r = parse("Public Bomba\nPortSet(Bomba, 0, 2)\n")
-    assert r.program.find_var("Bomba").relay_idx == 1
+def test_portset_dentro_de_un_if_de_una_linea():
+    """El cuerpo del If puede ser un PortSet, que no lleva '='."""
+    r = parse("Public Nivel\nIf (Nivel > 5) Then PortSet(1, 1)\n")
+    st = r.program.stmts[-1]
+    assert st.type == StmtType.PORTSET
+    assert st.relay == 0
+    assert st.cond is not None           # la condición no se pierde
+
+
+def test_portset_con_variable_es_la_forma_vieja():
+    """PortSet(Variable, valor) era el modelo <=v1.6.18: ya no acciona nada."""
+    r = parse("Public Bomba\nPortSet(Bomba, 1)\n")
+    assert "fw-portset-forma-vieja" in codigos(r)
+    assert not r.program.stmts
+
+
+def test_portset_fuera_de_rango():
+    r = parse("Public Bomba\nPortSet(9, Bomba)\n")
+    assert "fw-portset-rango" in codigos(r)
+    assert not r.program.stmts
+
+
+def test_variable_con_nombre_de_rele_sin_portset_avisa():
+    """La trampa de migrar: DO1 = 1 ya no mueve el relé por sí solo."""
+    r = analyze("Public DO1\nDO1 = 1\n")
+    assert "rele-sin-portset" in codigos(r)
 
 
 def test_voltdiff_ignora_mult_con_menos_de_6_argumentos():
@@ -410,3 +439,32 @@ def test_diagnostico_usa_dos_variables_en_el_mismo_canal():
     r = analyze(texto)
     assert "canal-compartido" in codigos(r)
     assert "colision-canal" not in codigos(r)
+
+
+# ── Extensiones del router Teltonika (v1.6.14 / v1.6.18) ────────────────
+
+def test_router_user_y_pass_son_directivas():
+    """RouterUser=/RouterPass= configuran el RUT200 de cada equipo."""
+    r = parse("RouterUser=admin\nRouterPass=secreta\n")
+    assert r.program.network.router_user == "admin"
+    assert r.program.network.router_pass == "secreta"
+    assert not r.diagnostics
+
+
+def test_router_pass_se_trunca_a_31_caracteres():
+    """char[32] en el firmware."""
+    r = parse("RouterPass=" + "x" * 40 + "\n")
+    assert len(r.program.network.router_pass) == 31
+
+
+def test_modem_actualiza_la_variable_sin_consumir_canal():
+    r = analyze("Public Senal\nModemRSSI(Senal)\n")
+    v = r.program.find_var("Senal")
+    assert v.modem_field == "MODEMRSSI"
+    assert v.pin == -1                      # no ocupa canal analógico
+    assert "var-sin-valor" not in codigos(r)  # sí recibe valor, del poll
+
+
+def test_modem_con_variable_no_declarada():
+    r = parse("ModemSINR(NoExiste)\n")
+    assert "fw-modem-var" in codigos(r)

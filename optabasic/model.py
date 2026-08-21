@@ -13,6 +13,10 @@ class StmtType(IntEnum):
     ELSEIF = 2
     ELSE = 3
     ENDIF = 4
+    #: PortSet(Rele, Valor). Desde v1.7.0 es una instrucción ejecutable: el
+    #: relé cambia en el punto del programa donde está escrita la línea, y
+    #: solo ahí. Antes era una declaración que ligaba una variable a un relé.
+    PORTSET = 5
 
 
 class CmpOp(IntEnum):
@@ -37,14 +41,15 @@ class Var:
     value: float = 0.0
     pin: int = -1               # canal analógico A0-A7, -1 = sin asignar
     is4_20mA: bool = False
-    is_relay: bool = False
-    relay_idx: int = 0
     mult: float = 1.0
     offset: float = 0.0
     has_volt_instr: bool = False
     is_batt_v: bool = False
     no_auto_pin: bool = False
     is_pulse_count: bool = False
+    #: Campo de telemetría del router Teltonika (v1.6.14). La variable se
+    #: actualiza sola desde el poll HTTP al RUT200, sin consumir canal.
+    modem_field: str = ""
     pulse_pin: int = -1
     pulse_mult: float = 1.0
     pulse_offset: float = 0.0
@@ -78,8 +83,8 @@ class Var:
 
     @property
     def kind(self) -> str:
-        if self.is_relay:
-            return "Relé"
+        if self.modem_field:
+            return "Módem"
         if self.is_pulse_count:
             return "Pulsos"
         if self.is_batt_v:
@@ -146,6 +151,8 @@ class Stmt:
     type: StmtType
     line: int = 0
     dest_var: int = -1
+    #: PORTSET: relé accionado, 0-3 (DO1-DO4). -1 en los demás tipos.
+    relay: int = -1
     expr_tokens: int = 0
     expr_text: str = ""
     cond: "Cond | None" = None
@@ -165,6 +172,13 @@ class Network:
     port_line: int = 0
     pakbus_address: "int | None" = None
     address_line: int = 0
+    #: Credenciales del router Teltonika de ESTE equipo (v1.6.18). El firmware
+    #: arranca con usuario "admin" y clave vacía, así que sin RouterPass= el
+    #: login falla y las variables Modem* se quedan en 0.
+    router_user: str = ""
+    router_user_line: int = 0
+    router_pass: str = ""
+    router_pass_line: int = 0
 
     @property
     def provisioned(self) -> bool:
@@ -222,12 +236,17 @@ class Program:
                 slots[v.pin] = v
         return slots
 
-    def relay_map(self) -> "list[Var | None]":
-        """Qué variable controla cada relé DO1-DO4."""
-        slots: "list[Var | None]" = [None] * 4
-        for v in self.vars:
-            if v.is_relay and 0 <= v.relay_idx < 4 and slots[v.relay_idx] is None:
-                slots[v.relay_idx] = v
+    def relay_map(self) -> "list[list[Stmt]]":
+        """Qué PortSet acciona cada relé DO1-DO4.
+
+        Puede haber más de uno por relé: el programa es libre de accionarlo
+        desde varias ramas de un If. La lista vacía significa que ese relé no
+        se toca, y entonces se queda como lo dejó el programa anterior.
+        """
+        slots: "list[list[Stmt]]" = [[] for _ in range(4)]
+        for st in self.stmts:
+            if st.type == StmtType.PORTSET and 0 <= st.relay < 4:
+                slots[st.relay].append(st)
         return slots
 
     def pulse_map(self) -> "list[Var | None]":

@@ -188,6 +188,41 @@ CATALOGO: "list[Instr]" = [
         ejemplo="PakBusAddress=1",
     ),
     Instr(
+        nombre="RouterUser",
+        firma="RouterUser=usuario",
+        resumen="Usuario del router Teltonika de este equipo",
+        categoria="Configuración del equipo",
+        detalle=(
+            "Usuario administrador del RUT200 conectado a este equipo, para "
+            "que las instrucciones Modem* puedan consultarle la señal. Máximo "
+            "31 caracteres.\n\n"
+            "Sin esta línea el firmware usa «admin». Hasta la 1.6.17 el usuario "
+            "y la clave iban compilados en el firmware, iguales para todos los "
+            "equipos; desde la 1.6.18 cada sitio pone los suyos acá."
+        ),
+        ejemplo="RouterUser=admin",
+    ),
+    Instr(
+        nombre="RouterPass",
+        firma="RouterPass=clave",
+        resumen="Clave del router Teltonika de este equipo",
+        categoria="Configuración del equipo",
+        detalle=(
+            "Clave del usuario indicado en RouterUser. Máximo 31 caracteres.\n\n"
+            "El firmware arranca con la clave **vacía**, así que un programa "
+            "con instrucciones Modem* pero sin esta línea no se puede loguear "
+            "y esas variables se quedan en 0."
+        ),
+        ejemplo="RouterPass=la_clave_del_router",
+        trampa=(
+            "La clave queda escrita en texto plano dentro del .CR1, y ese "
+            "archivo se puede descargar del equipo desde el servidor. Conviene "
+            "que la del router no se use en ningún otro lado, y no subir esos "
+            ".CR1 a un repositorio. El equipo sí tiene el cuidado de no "
+            "escribirla en su log."
+        ),
+    ),
+    Instr(
         nombre="Scan",
         firma="Scan(Intervalo, Unidad, Buffers, MaxScans)",
         resumen="Cada cuánto el equipo lee los sensores y ejecuta el programa",
@@ -344,31 +379,41 @@ CATALOGO: "list[Instr]" = [
     # ── Salidas ──────────────────────────────────────────────────────
     Instr(
         nombre="PortSet",
-        firma="PortSet(Variable, Valor, Rele)",
-        resumen="Conecta una variable con un relé físico",
+        firma="PortSet(Rele, Valor)",
+        resumen="Enciende o apaga uno de los 4 relés",
         categoria="Salidas",
         detalle=(
-            "Declara que tal variable maneja tal relé. A partir de ahí, en cada "
-            "scan el relé sigue el valor de la variable: mayor que 0,5 cierra, "
-            "menor abre.\n\n"
-            "Con eso el programa controla el relé con su propia lógica, por "
-            "ejemplo «If (Nivel < Minimo) Then Bomba = 1». También se puede "
-            "accionar a mano desde la plataforma escribiendo la variable."
+            "Cierra el relé si el valor supera 0,5 y lo abre si no. El valor "
+            "puede ser una variable, una constante o una cuenta.\n\n"
+            "Es una instrucción como cualquier otra: se ejecuta en el punto del "
+            "programa donde está escrita, respeta los bloques If, y el relé "
+            "cambia ahí y en ningún otro lado. Si el programa no vuelve a pasar "
+            "por esa línea, el relé se queda como está.\n\n"
+            "Lo habitual es decidir con la lógica y accionar al final del Scan, "
+            "así en cada ciclo primero se decide todo y después se mueve el "
+            "hardware:\n\n"
+            "    If (Nivel < Minimo) Then Bomba = 1\n"
+            "    If (Nivel > Maximo) Then Bomba = 0\n"
+            "    PortSet(1, Bomba)"
         ),
         parametros=[
-            Param("Variable", "La variable que va a manejar el relé."),
-            Param("Valor", "En el Opta no hace nada: no fija el estado inicial ni acciona el relé.", ignorado=True),
-            Param("Rele", "Cuál de los 4 relés, de 1 a 4.", opcional=True),
+            Param("Rele", "Cuál de los 4 relés, de 1 a 4. Va como número, no como variable."),
+            Param("Valor", "Variable, constante o cuenta. Mayor que 0,5 cierra el relé."),
         ],
-        ejemplo="Public Bomba\nPortSet(Bomba, 0, 1)",
+        ejemplo="Public Bomba\nIf (Nivel < 1.0) Then Bomba = 1\nPortSet(1, Bomba)",
         trampa=(
-            "El segundo argumento no hace absolutamente nada, aunque parezca "
-            "que fija el estado. Lo que mueve el relé es el valor de la "
-            "variable en cada scan.\n\n"
-            "Si omitís el tercer argumento, el equipo deduce el relé del nombre "
-            "de la variable: tiene que empezar con DO seguido del número "
-            "(DO1 a DO4). Con cualquier otro nombre y sin tercer argumento, "
-            "queda pegado al relé 1 por descarte. Conviene indicarlo siempre."
+            "Hasta el firmware 1.6.18 esto funcionaba al revés: PortSet no "
+            "accionaba nada, sino que ligaba una variable a un relé, y de ahí "
+            "en más el relé seguía el valor de esa variable en cada scan. El "
+            "relé salía del nombre de la variable —DO1 a DO4— o de un tercer "
+            "argumento.\n\n"
+            "Un programa escrito así no mueve ningún relé en 1.7.0, y no da "
+            "error al cargar: el equipo anota la línea en el log, las variables "
+            "cambian y los relés se quedan quietos. Al actualizar el firmware "
+            "hay que reescribir cada PortSet.\n\n"
+            "Escribir la variable desde la plataforma tampoco mueve el relé "
+            "solo: para que un botón remoto sirva, el programa tiene que llevar "
+            "su PortSet(N, Variable) dentro del Scan."
         ),
     ),
 
@@ -673,6 +718,36 @@ CATALOGO: "list[Instr]" = [
             "Abs, Int y Sqr son las TRES únicas funciones que existen. No hay "
             "Sin, Cos, Ln, Exp ni Mod: si la fórmula las necesita, hay que "
             "resolverlas con una tabla de valores y comparaciones If."
+        ),
+    ),
+
+    # ── Telemetría del router Teltonika ──────────────────────────────
+    Instr(
+        nombre="ModemRSSI",
+        firma="ModemRSSI(Variable)",
+        resumen="Señal celular del router, en dBm",
+        categoria="Entradas",
+        detalle=(
+            "Guarda en la variable la última señal leída del router Teltonika "
+            "conectado a este equipo (probado con un RUT200). El equipo le "
+            "pregunta por su API local cada minuto, así que la variable se "
+            "actualiza sola: no hace falta asignarla.\n\n"
+            "No ocupa ningún canal analógico. Hay una instrucción por dato: "
+            "ModemRSSI y ModemRSRP en dBm, ModemRSRQ y ModemSINR en dB, "
+            "ModemTemp en grados, y ModemNetGen con 2, 3 o 4 según la "
+            "tecnología. Son propias del Opta, no existen en un CR1000.\n\n"
+            "El equipo solo consulta al router si el programa usa alguna de "
+            "estas instrucciones: un .CR1 que no las nombra no genera tráfico."
+        ),
+        parametros=[Param("Variable", "Dónde se guarda el valor. Tiene que estar declarada.")],
+        ejemplo="Public Senal\nRouterUser=admin\nRouterPass=clave\nModemRSSI(Senal)",
+        trampa=(
+            "Necesita RouterUser y RouterPass en el mismo .CR1: el firmware "
+            "arranca con la clave vacía y sin ella el login falla.\n\n"
+            "Si el router no contesta —apagado, cable suelto, o el equipo no "
+            "tiene router— la variable conserva su último valor, o queda en 0 "
+            "si nunca hubo una lectura buena. No da error ni cuelga el equipo, "
+            "así que un 0 puede significar tanto «sin señal» como «sin router»."
         ),
     ),
 

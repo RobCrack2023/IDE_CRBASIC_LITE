@@ -77,14 +77,17 @@ RELE_HISTERESIS = """'-- Control de rele con banda muerta ----------------------
 Const Nivel_Bajo = 1.0
 Const Nivel_Alto = 4.0
 Public Nivel
-Public DO1
-PortSet(DO1, 0, 1)
+Public Bomba
 
 If (Nivel < Nivel_Bajo) Then
-    DO1 = 1
+    Bomba = 1
 ElseIf (Nivel > Nivel_Alto) Then
-    DO1 = 0
+    Bomba = 0
 EndIf
+
+' Aca y solo aca se mueve el rele. Va despues de la logica para que en
+' cada scan primero se decida y despues se accione.
+PortSet(1, Bomba)
 """
 
 PLUVIOMETRO = """'-- Contador de pulsos (pluviometro, caudalimetro) ----------------

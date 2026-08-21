@@ -5,7 +5,7 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 """
 
 #: Versión del firmware contra la que está calcado este motor.
-FIRMWARE_VERSION = "1.6.12"
+FIRMWARE_VERSION = "1.7.0"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
@@ -31,6 +31,7 @@ MAX_FIELD_NAME = 23
 MAX_STATION_NAME = 23
 MAX_HOST_LEN = 63
 MAX_UNITS_LEN = 15
+MAX_ROUTER_CRED = 31       # RouterUser=/RouterPass=, char[32] en el firmware
 
 # ── Valores por defecto ──────────────────────────────────────────────────
 DEFAULT_TABLE_SIZE = 50000     # CR_DEFAULT_TABLE_SIZE (cuando Size <= 0)

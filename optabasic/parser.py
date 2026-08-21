@@ -15,7 +15,8 @@ from . import limits as L
 from .cutil import c_atof, c_atoi, cr_eq, rstrip_ctrl, stristr, strncpy
 from .diagnostics import Diagnostic, DiagnosticList, Severity, Source
 from .expr import compile_expr
-from .lexer import ParsedLine, SourceLine, keyword, parse_line, split_lines
+from .lexer import (ParsedLine, SourceLine, args_of, keyword, paren,
+                    parse_line, split_lines)
 from .model import (
     Cond,
     CmpOp,
@@ -39,6 +40,11 @@ _OUTPUT_KEYWORDS = {
 #: Battery salió de esta lista en v1.6.9: pasó de no-op a instrucción real.
 _NOOP_KEYWORDS = ("BEGINPROG", "ENDPROG", "NEXTSCAN", "CALLTABLE")
 _RECOGNIZED_UNSIMULATED = ("BRHALF", "REALTIME", "PANELTEMP", "SW12")
+#: Telemetría del router Teltonika (RUT200) por su API REST local, v1.6.14.
+#: A diferencia de _RECOGNIZED_UNSIMULATED, estas SÍ se ejecutan: la variable
+#: se actualiza desde el poll HTTP cada 60 s y no consume canal analógico.
+_MODEM_INSTR = ("MODEMRSSI", "MODEMRSRP", "MODEMRSRQ", "MODEMSINR",
+                "MODEMTEMP", "MODEMNETGEN")
 _COND_OPS = ((">=", CmpOp.GE), ("<=", CmpOp.LE), ("<>", CmpOp.NE),
              (">", CmpOp.GT), ("<", CmpOp.LT), ("=", CmpOp.EQ))
 
@@ -136,6 +142,10 @@ class _Parser:
             self.do_directive_int(line, "ServerPort", 1, 65535)
         elif cr_eq(kw, "PAKBUSADDRESS") or kw.startswith("PAKBUSADDRESS="):
             self.do_directive_int(line, "PakBusAddress", 1, 4094)
+        elif cr_eq(kw, "ROUTERUSER") or kw.startswith("ROUTERUSER="):
+            self.do_directive_str(line, "RouterUser", L.MAX_ROUTER_CRED)
+        elif cr_eq(kw, "ROUTERPASS") or kw.startswith("ROUTERPASS="):
+            self.do_directive_str(line, "RouterPass", L.MAX_ROUTER_CRED)
         elif cr_eq(kw, "PUBLIC") or cr_eq(kw, "DIM"):
             self.do_public(line, kw)
         elif cr_eq(kw, "UNITS"):
@@ -168,6 +178,8 @@ class _Parser:
             self.do_excitech(pl)
         elif cr_eq(kw, "BATTERY"):
             self.do_battery(pl)
+        elif kw in _MODEM_INSTR:
+            self.do_modem(pl, kw)
         elif kw in _NOOP_KEYWORDS:
             if kw == "BEGINPROG":
                 self.result.saw_begin_prog = True
@@ -236,6 +248,10 @@ class _Parser:
         net = self.prog.network
         if which == "StationName":
             net.station_name, net.station_line = value, self.line.file_no
+        elif which == "RouterUser":
+            net.router_user, net.router_user_line = value, self.line.file_no
+        elif which == "RouterPass":
+            net.router_pass, net.router_pass_line = value, self.line.file_no
         else:
             net.server_host, net.host_line = value, self.line.file_no
 
@@ -411,42 +427,70 @@ class _Parser:
             self.issue("AIChannel: canal fuera de rango 1-8", code="fw-aichannel-rango")
 
     # ── Relés ───────────────────────────────────────────────────────────
-    def do_portset(self, pl: ParsedLine) -> None:
+    def do_portset(self, pl: ParsedLine, base: "Stmt | None" = None) -> None:
+        """PortSet(Rele, Valor) — instrucción ejecutable desde v1.7.0.
+
+        `base` viene con la condición ya parseada cuando la llamada sale de un
+        If de una línea; es None para un PortSet suelto.
+
+        Hasta v1.6.18 esto no era una instrucción: ligaba una variable a un
+        relé, el argumento de valor se ignoraba, y el relé seguía el valor de
+        esa variable en cada scan.
+        """
+        if len(pl.args) < 2:
+            self.issue("PortSet: faltan argumentos (rele, valor)", code="fw-portset")
+            return
+        rele_txt = pl.args[0].strip()
+        if not rele_txt[:1].isdigit():
+            # Casi siempre es un programa anterior a v1.7.0. El síntoma —el
+            # relé quieto— no lleva a la causa solo, así que se nombra.
+            viejo = self.prog.find_var(rele_txt) is not None
+            self.issue(
+                "PortSet: 1er arg no es el numero de rele",
+                code="fw-portset-forma-vieja" if viejo else "fw-portset-rele",
+                mensaje=(
+                    f"El primer argumento de PortSet es el relé (1-4), no una variable. "
+                    f"«{rele_txt}» es la forma anterior a v1.7.0: el equipo registra la "
+                    f"línea y no mueve ningún relé. Escribí PortSet(N, {rele_txt})."
+                ) if viejo else (
+                    f"«{rele_txt}» no es un número de relé. PortSet(N, Valor) con N de 1 a 4."
+                ),
+            )
+            return
+        r = c_atoi(rele_txt)
+        if not (1 <= r <= L.N_RELAYS):
+            self.issue("PortSet: rele fuera de rango 1-4", code="fw-portset-rango")
+            return
+
+        expr_text = pl.args[1]
+        res = self.compile(expr_text)
+        if not res.ok:
+            self.issue("PortSet: valor invalido", code="fw-portset-valor")
+            return
+        if len(self.prog.stmts) >= L.MAX_STMTS:
+            self.issue(f"limite de instrucciones ({L.MAX_STMTS})", code="fw-stmts-limite")
+            return
+        self.mark_reads(res.refs)
+        st = base if base is not None else Stmt(line=self.line.file_no, type=StmtType.ASSIGN)
+        st.type = StmtType.PORTSET
+        st.relay = r - 1
+        st.expr_tokens = res.tokens
+        st.expr_text = expr_text.strip()
+        self.prog.stmts.append(st)
+
+    # ── Telemetría del router ───────────────────────────────────────────
+    def do_modem(self, pl: ParsedLine, kw: str) -> None:
+        """Modem*(Dest) — la variable la actualiza el poll al RUT200."""
         if not pl.args:
-            self.issue("PortSet: faltan argumentos", code="fw-portset")
+            self.issue(f"{kw}: faltan argumentos", code="fw-modem")
             return
         v = self.prog.find_var(pl.args[0])
         if v is None:
-            self.issue("PortSet: var no declarada", code="fw-portset-var")
+            self.issue(f"{kw}: var no declarada", code="fw-modem-var")
             return
-        v.is_relay = True
+        v.modem_field = kw
+        v.no_auto_pin = True
         v.hw_instr_lines.append(self.line.file_no)
-        if len(pl.args) >= 3:
-            r = c_atoi(pl.args[2])
-            if 1 <= r <= 4:
-                v.relay_idx = r - 1
-            else:
-                self.issue("PortSet: relé fuera de rango 1-4", code="fw-portset-rango")
-            return
-        n = v.name
-        if len(n) >= 3 and n[0] in "Dd" and n[1] in "Oo" and n[2].isdigit():
-            # El firmware hace n[2]-'1' sin validar: DO0 da un índice
-            # imposible (255) y DO5..DO9 quedan fuera de rango.
-            v.relay_idx = ord(n[2]) - ord("1")
-        else:
-            # isRelay ya quedó marcado antes de este chequeo, así que la
-            # variable SÍ controla un relé: el primero, por descarte.
-            self.issue(
-                "PortSet: falta N, nombre no es DOx",
-                Severity.WARNING,
-                "fw-portset-nombre",
-                mensaje=(
-                    f"«{v.name}» no empieza con DO1..DO4 y no se indicó el relé, así "
-                    "que el equipo lo deja en el relé 1 por descarte, no por decisión "
-                    f"tuya. Escribí PortSet({v.name}, 0, N) con el número que "
-                    "corresponda."
-                ),
-            )
 
     # ── Contador de pulsos ──────────────────────────────────────────────
     def do_pulsecount(self, pl: ParsedLine) -> None:
@@ -553,7 +597,9 @@ class _Parser:
                 self.issue("If sin 'Then'", code="fw-if-then")
                 return
             body = line[tp + 5:].lstrip()
-            if not body or "=" not in body:
+            # Un PortSet como cuerpo no lleva '=', así que hay que mirarlo
+            # antes o se confunde con la apertura de un bloque If.
+            if not body or ("=" not in body and not cr_eq(keyword(body), "PORTSET")):
                 # Apertura de bloque If
                 st = Stmt(type=StmtType.IF, line=self.line.file_no)
                 ok = False
@@ -631,9 +677,24 @@ class _Parser:
         if not self.parse_cond_pair(cond_buf, st, second_msg="If: 2da condicion AND/OR invalida"):
             return
 
+        # El cuerpo puede ser un PortSet, que no lleva '=' y si no se mira
+        # antes cae en el error de "no es asignacion", que no dice nada.
+        if cr_eq(keyword(body), "PORTSET"):
+            content = paren(body)
+            if content is None:
+                self.issue("If Then PortSet: faltan parentesis", code="fw-if-portset")
+                return
+            body_args, body_raw, _ = args_of(content)
+            self.do_portset(
+                ParsedLine(src=self.line, keyword="PORTSET", has_paren=True,
+                           args=body_args, raw_args=body_raw),
+                base=st,
+            )
+            return
+
         eq = body.find("=")
         if eq < 0:
-            self.issue("If Then: no es asignacion", code="fw-if-asign")
+            self.issue("If Then: no es asignacion ni PortSet", code="fw-if-asign")
             return
         dst = rstrip_ctrl(strncpy(body[:eq], L.MAX_VAR_NAME))
         v = self.prog.find_var(dst)
@@ -770,7 +831,7 @@ class _Parser:
 
         used = [False] * 8
         for v in self.prog.vars:
-            if not v.is_relay and 0 <= v.pin < 8:
+            if 0 <= v.pin < 8:
                 used[v.pin] = True
             if v.is_pulse_count and 0 <= v.pulse_pin < 8:
                 used[v.pulse_pin] = True
@@ -780,7 +841,7 @@ class _Parser:
         # Reserva histórica: nombre con «att» sin canal ni instrucción de
         # lectura → A7. Desde v1.6.9 solo si nadie tomó ese canal.
         for v in self.prog.vars:
-            if v.is_relay or v.no_auto_pin or v.pin >= 0 or v.is4_20mA or v.has_volt_instr:
+            if v.no_auto_pin or v.pin >= 0 or v.is4_20mA or v.has_volt_instr:
                 continue
             if "att" in v.name or "ATT" in v.name or "Att" in v.name:
                 if used[7]:
@@ -793,7 +854,7 @@ class _Parser:
 
         next_pin = 0
         for v in self.prog.vars:
-            if v.is_relay or v.no_auto_pin or v.pin >= 0:
+            if v.no_auto_pin or v.pin >= 0:
                 continue
             if not v.has_volt_instr and not v.is4_20mA:
                 continue

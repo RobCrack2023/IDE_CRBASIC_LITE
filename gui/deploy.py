@@ -295,11 +295,26 @@ class DialogoEnvio(QDialog):
             f"FileDownload={respuesta.get('download_resp')}, "
             f"RunNow={respuesta.get('run_resp')}"
         )
+        # El equipo puede cortar la conexión justo al aplicar el programa, si
+        # este le cambia la configuración de red. No es un fallo —el programa ya
+        # está cargado— pero conviene decirlo, porque el equipo queda unos
+        # segundos sin responder y desde afuera parece que algo salió mal.
+        aviso = ""
+        if respuesta.get("reconnecting"):
+            aviso = (
+                "\n\nEl equipo reinició su conexión al aplicarlo, así que no "
+                "alcanzó a confirmar el arranque. Es lo esperado cuando el "
+                "programa cambia ServerHost, ServerPort o PakBusAddress: vuelve "
+                "a llamar solo en unos segundos. No hace falta subirlo de nuevo."
+            )
+            self._log("  El equipo esta reconectando — el programa ya quedo cargado.")
         QMessageBox.information(
             self,
             "Programa enviado",
-            f"El programa quedó cargado como {respuesta.get('filename')}.\n\n"
-            "Conviene revisar el .HLOG del equipo para ver si descartó alguna línea.",
+            f"El programa quedó cargado como {respuesta.get('filename')}."
+            + aviso
+            + "\n\nConviene revisar el .HLOG del equipo para ver si descartó "
+              "alguna línea.",
         )
 
     def reject(self):
