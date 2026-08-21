@@ -321,9 +321,10 @@ def _declaraciones(result: ParseResult) -> None:
         else:
             vistos[clave] = v.decl_line
 
-    # Variables que nunca reciben un valor.
+    # Variables que nunca reciben un valor. Las Modem* sí lo reciben: se las
+    # actualiza el poll al router, aunque no ocupen canal analógico.
     for v in prog.vars:
-        if v.is_relay or v.reads_hardware or v.assigned_lines:
+        if v.reads_hardware or v.assigned_lines or v.modem_field:
             continue
         if v.name.upper() in ("PUBLIC", "DIM", "UNITS"):
             continue  # ya avisado como declaración indentada
@@ -357,7 +358,7 @@ def _hardware(result: ParseResult) -> None:
     # Se agotaron los A0-A7 (break silencioso en OptaPakBus.ino:2942).
     sin_canal = [
         v for v in prog.vars
-        if v.pin < 0 and not v.is_relay and not v.is_pulse_count
+        if v.pin < 0 and not v.is_pulse_count
         and (v.is4_20mA or v.has_volt_instr) and not v.no_auto_pin
     ]
     for v in sin_canal:
@@ -380,7 +381,7 @@ def _hardware(result: ParseResult) -> None:
     # excitación con una medición no puede funcionar.
     ocupantes: "dict[int, list[tuple[str, str, int]]]" = {}
     for v in prog.vars:
-        if not v.is_relay and v.pin >= 0:
+        if v.pin >= 0:
             ocupantes.setdefault(v.pin, []).append((v.name, "medición", v.decl_line))
         if v.is_pulse_count and v.pulse_pin >= 0:
             ocupantes.setdefault(v.pulse_pin, []).append(
@@ -455,25 +456,21 @@ def _hardware(result: ParseResult) -> None:
                 "lo que corresponde desde el firmware 1.6.9.",
                 code="att-con-lectura",
             )
-        # Relés fuera de rango: el firmware hace n[2]-'1' sin validar.
-        if v.is_relay and not (0 <= v.relay_idx < L.N_RELAYS):
-            diags.error(
-                v.decl_line,
-                f"«{v.name}» se mapea a un relé inexistente (el Opta tiene "
-                f"{L.N_RELAYS}: DO1 a DO4). El nombre debe ser DO1..DO4, o usá el "
-                "tercer argumento de PortSet para indicar el relé.",
-                code="rele-fuera-de-rango",
-            )
-        # Nombre con pinta de relé pero sin PortSet que lo mapee.
-        if (not v.is_relay and len(v.name) >= 3 and v.name[:2].upper() == "DO"
-                and v.name[2].isdigit()):
-            diags.warning(
-                v.decl_line,
-                f"«{v.name}» parece un relé pero no tiene ningún PortSet: escribirle un "
-                "valor no mueve ninguna salida física. Agregá "
-                f"PortSet({v.name}, 0, {v.name[2]}).",
-                code="rele-sin-portset",
-            )
+        # Nombre con pinta de relé pero sin ningún PortSet que lo accione.
+        # Es la trampa de la migración a v1.7.0: el programa viejo asignaba
+        # DO1 = 1 y el relé se movía solo; ahora eso no acciona nada y el
+        # síntoma —el relé quieto— no lleva a la causa.
+        if (len(v.name) >= 3 and v.name[:2].upper() == "DO"
+                and v.name[2].isdigit() and "1" <= v.name[2] <= "4"):
+            n = int(v.name[2])
+            if not prog.relay_map()[n - 1]:
+                diags.warning(
+                    v.decl_line,
+                    f"«{v.name}» parece manejar el relé {n} pero ningún PortSet lo "
+                    "acciona: desde v1.7.0 el nombre de la variable no mueve "
+                    f"hardware. Agregá PortSet({n}, {v.name}) dentro del Scan.",
+                    code="rele-sin-portset",
+                )
 
     # VoltDiff/VoltSE con menos de 6 argumentos: Mult y Offset se descartan
     # (OptaPakBus.ino:2732) y el escalado queda en 1.0/0.0.

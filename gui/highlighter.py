@@ -15,10 +15,16 @@ DECLARACION = ["Public", "Dim", "Const", "Units", "As"]
 INSTRUCCIONES = [
     "VoltDiff", "VoltSE", "AIChannel", "PortSet", "PulseCount",
     "PulseEdge", "ExciteCh", "Battery",
+    # Telemetría del router Teltonika (v1.6.14): la variable la actualiza el
+    # poll HTTP al RUT200, no consume canal analógico.
+    "ModemRSSI", "ModemRSRP", "ModemRSRQ", "ModemSINR", "ModemTemp",
+    "ModemNetGen",
     "Sample", "Average", "Maximum", "Minimum", "Totalize",
     "BrHalf", "RealTime", "PanelTemp", "SW12",
 ]
-DIRECTIVAS = ["StationName", "ServerHost", "ServerPort", "PakBusAddress"]
+DIRECTIVAS = ["StationName", "ServerHost", "ServerPort", "PakBusAddress",
+              # Credenciales del RUT200 de cada equipo (v1.6.18).
+              "RouterUser", "RouterPass"]
 FUNCIONES = ["Abs", "Int", "Sqr"]
 LITERALES = [
     "True", "False", "Sec", "Min", "Hour", "Day", "Msec",

@@ -219,9 +219,7 @@ class VentanaPrincipal(QMainWindow):
         """
         salida = []
         for v in self.resultado.program.vars:
-            if v.is_relay:
-                detalle = f"relé DO{v.relay_idx + 1}"
-            elif v.is_pulse_count:
+            if v.is_pulse_count:
                 detalle = f"contador de pulsos en A{v.pulse_pin}"
             elif v.pin >= 0:
                 detalle = f"{v.kind.lower()} en A{v.pin}"

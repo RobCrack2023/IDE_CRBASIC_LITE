@@ -40,8 +40,10 @@ def test_busqueda_sin_distinguir_mayusculas():
 
 def test_argumentos_ignorados_estan_marcados():
     """Los que el firmware descarta tienen que salir señalados en la ficha."""
+    # PortSet salió de esta lista en v1.7.0: su argumento Valor pasó de
+    # decorativo a ser lo que decide el estado del relé.
     portset = buscar("PortSet")
-    assert portset.parametros[1].ignorado          # Valor no hace nada
+    assert not any(pr.ignorado for pr in portset.parametros)
     datatable = buscar("DataTable")
     assert datatable.parametros[1].ignorado        # Disparador no hace nada
     scan = buscar("Scan")

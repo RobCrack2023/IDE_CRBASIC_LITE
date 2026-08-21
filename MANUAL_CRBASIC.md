@@ -7,7 +7,15 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Nota:** la tabla "Funciones CRBasic soportadas" del [README.md](README.md)
+> **Versión de referencia.** Calcado del firmware **v1.7.0**
+> (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
+> palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
+> están implementadas en el motor de este IDE (`optabasic/limits.py`,
+> `parser.py`, `lint.py`), con `FIRMWARE_VERSION` anotando contra qué versión
+> está calcado. Este archivo es el original: el editor web del proyecto
+> LoggerNet Alterno mantiene una copia sincronizada desde acá.
+
+> **Nota:** la tabla "Funciones CRBasic soportadas" del README del firmware
 > quedó desactualizada frente al código actual (por ejemplo, ya no es cierto
 > que "múltiples operadores" o "`If`/`EndIf` multilínea" no se reconozcan).
 > Este documento refleja el estado real del parser a partir del commit
@@ -135,6 +143,8 @@ firmware sirve para varios equipos):
 | `ServerHost=host_o_ip` | Host/IP del servidor LoggerNet destino. Máx. 63 caracteres. |
 | `ServerPort=N` (1-65535) | Puerto TCP operativo. **Su sola presencia marca al equipo como "provisionado"**; sin esta línea, el equipo se conecta al puerto de provisión (4789) en vez del operativo. |
 | `PakBusAddress=N` (1-4094) | Dirección PakBus de este logger (debe coincidir con el `node_id` configurado en el servidor). |
+| `RouterUser=usuario` | Usuario admin del router Teltonika de **este** equipo, para las instrucciones `Modem*` (§20). Máx. 31 caracteres. Sin esta línea el firmware usa `admin`. Desde v1.6.18. |
+| `RouterPass=clave` | Clave de ese usuario. Máx. 31 caracteres. **El firmware arranca con la clave vacía**: sin esta línea el login falla y las variables `Modem*` se quedan en 0. Desde v1.6.18. |
 
 Se aceptan con o sin espacio antes del `=` (`ServerPort=6787` o
 `ServerPort = 6787`). Cambiar cualquiera de estos valores respecto al que
@@ -317,20 +327,73 @@ Al terminar de parsear el programa:
 ## 8. Salidas de relé — `PortSet`
 
 ```
-PortSet(Dest, val)          ' relé inferido del nombre DOx
-PortSet(Dest, val, N)       ' relé N (1-4) explícito
+PortSet(Rele, Valor)
 ```
 
-- `Dest` (arg 0): variable que representa el relé (debe existir).
-- `val` (arg 1): **se ignora por completo** — no fija ni el estado inicial ni
-  ninguna acción; el estado real del relé sale del valor de `Dest` en cada
-  scan (`relayState = Dest > 0.5`).
-- Si se pasa un tercer argumento `N` (1-4), fuerza ese relé físico
-  explícitamente. Si no, y el nombre de `Dest` empieza con `DO` seguido de un
-  dígito (`DO1`.. `DO4`), el relé se infiere de ese dígito.
-- El programa puede escribir la variable de relé con lógica propia
-  (`If (Moviendo=1) Then DO1=1`) y eso **sí** mueve el GPIO real en el mismo
-  scan — no hace falta pasar por `SetValues` externo.
+- `Rele` (arg 0): número de relé físico, **1 a 4** (DO1-DO4). Va como número,
+  no como variable.
+- `Valor` (arg 1): cualquier expresión. El relé queda **cerrado** si el
+  resultado supera `0.5`, y abierto si no.
+
+Es una instrucción ejecutable como cualquier otra: corre en el punto del
+programa donde está escrita, respeta los bloques `If`, y **el relé cambia solo
+ahí**. Si el programa no vuelve a ejecutar esa línea, el relé se queda como
+está.
+
+El patrón habitual es decidir con la lógica y aplicar al final del `Scan`, de
+modo que en cada ciclo primero se decide todo y después se acciona:
+
+```
+If (Nivel < Niv_Bajo) Then Bomba = 1
+If (Nivel > Niv_Alto) Then Bomba = 0
+PortSet(1, Bomba)
+```
+
+También vale directo dentro de un `If`, en una línea o en bloque:
+
+```
+If (Moviendo = 1) Then PortSet(1, 1)
+```
+
+> **Cambio incompatible en v1.7.0.** Hasta v1.6.18 `PortSet` no era una
+> instrucción sino una **declaración**: `PortSet(Variable, valor)` ligaba esa
+> variable a un relé, el argumento de valor se ignoraba por completo, y el relé
+> pasaba a seguir el valor de la variable en **cada scan**. El relé se elegía
+> con un tercer argumento `N` o, si faltaba, mirando las tres primeras letras
+> del nombre de la variable (`DO1`..`DO4`) — con lo cual `Bomba_DO1` caía en el
+> relé 1 por descarte y no por decisión del programa.
+>
+> Ese modelo tenía tres efectos que ya no existen: cualquier asignación a la
+> variable, en cualquier parte del programa, movía hardware; un `SetValues`
+> remoto lo movía al instante y el programa lo pisaba en el scan siguiente; y
+> el estado del relé se copiaba de vuelta a la variable.
+>
+> **Un `.CR1` escrito para el modelo viejo no acciona ningún relé en v1.7.0.**
+> No da error de carga: el equipo registra la línea en el log y sigue
+> corriendo, las variables cambian y los relés se quedan quietos. Al
+> actualizar el firmware hay que migrar el programa.
+
+### Migrar un programa del modelo viejo
+
+| Antes (≤ v1.6.18) | Ahora (v1.7.0) |
+|---|---|
+| `PortSet(DO1, 0, 1)` + `If (x) Then DO1 = 1` | `If (x) Then DO1 = 1` + `PortSet(1, DO1)` |
+| `PortSet(Bomba_DO1, 0)` + `Bomba_DO1 = 1` | `Bomba = 1` + `PortSet(1, Bomba)` |
+
+La variable deja de ser especial: es una variable común que se archiva en las
+tablas igual que antes, y el nombre puede ser cualquiera. Lo único que mueve
+el relé es el `PortSet`.
+
+### Accionar un relé desde la plataforma
+
+Escribir la variable por `SetValues` (botón de la HMI, LoggerNet) ya **no**
+mueve el relé directamente: el equipo escribe la variable y nada más. Para que
+un mando remoto funcione, el `.CR1` tiene que llevar su `PortSet(N, Variable)`
+dentro del `Scan` — el relé se mueve en el scan siguiente, no al instante.
+
+A cambio desaparece el conflicto que había antes, donde un mando manual y un
+programa con control automático se pisaban ciclo por medio sin que se notara
+cuál iba ganando.
 
 ---
 
@@ -695,17 +758,19 @@ EndTable
 
 ## 18. Ejemplo completo comentado
 
-Ver [`programa_compuerta.CR1`](programa_compuerta.CR1) — control de una
-compuerta con sensor ultrasónico 4-20mA, que usa: `StationName`,
+Ver [`ejemplos/programa_compuerta.CR1`](ejemplos/programa_compuerta.CR1) —
+control de una compuerta con sensor ultrasónico 4-20mA, que usa:
+`StationName`,
 `ServerHost`/`ServerPort`/`PakBusAddress`, `Const`, `Public`/`Dim`, `Units`,
-`AIChannel`, `PortSet` con relé explícito, expresiones aritméticas
+`AIChannel`, `PortSet` para accionar dos relés, expresiones aritméticas
 completas, bloques `If`/`AND` de una línea encadenados, y una `DataTable`
 con `Sample` a 1 registro/minuto.
 
 Un ejemplo más simple, con `VoltSE`, `Average`/`Maximum`/`Minimum` y dos
-tablas con distinta frecuencia, en [`programa_opta.CR1`](programa_opta.CR1)
-(nota: este archivo es más antiguo y su encabezado cita límites desactualizados
-del parser — los límites reales son los de la §16 de este manual).
+tablas con distinta frecuencia, en
+[`ejemplos/programa_opta.CR1`](ejemplos/programa_opta.CR1) (nota: ese archivo
+es más antiguo y su encabezado cita límites desactualizados del parser — los
+límites reales son los de la §16 de este manual).
 
 ---
 
@@ -734,6 +799,10 @@ del parser — los límites reales son los de la §16 de este manual).
       con `Totalize`, nunca con `Sample` (§9). Si la excitación sale de un
       canal del Opta y no de una fuente externa, agregar el `ExciteCh(N)` —
       sin esa línea no cuenta nada.
+- [ ] **Si el equipo viene de un firmware ≤v1.6.18 y usa relés**, migrar todos
+      los `PortSet` a la forma `PortSet(N, Valor)` con `N` = 1-4 (§8). Los
+      programas viejos cargan sin error y dejan los relés quietos: la falla es
+      silenciosa y solo se nota en terreno.
 - [ ] **Si el equipo viene de un firmware ≤v1.6.8**, revisar todas las
       asignaciones simples indentadas: hasta esa versión se descartaban en
       silencio y la variable quedaba en `0`. Revisá los históricos de esos
@@ -750,3 +819,50 @@ del parser — los límites reales son los de la §16 de este manual).
       el `.HLOG` del equipo buscando `"[CRBasic]"` — cualquier línea con
       `"ignorada"` apunta a un número de línea exacto del programa que no
       se pudo interpretar (ver "Diagnóstico de errores de parseo" en §1).
+
+---
+
+## 20. Módem celular vía router Teltonika (extensión propia, desde v1.6.14)
+
+```
+ModemRSSI(Dest)     ' dBm
+ModemRSRP(Dest)     ' dBm
+ModemRSRQ(Dest)     ' dB
+ModemSINR(Dest)     ' dB
+ModemTemp(Dest)     ' °C, temperatura del módulo celular
+ModemNetGen(Dest)   ' 2/3/4 según tecnología (2G/3G/4G)
+```
+
+Cada instrucción vincula `Dest` al último valor leído de un router Teltonika
+(probado contra un RUT200) por su API REST local, sin depender de la nube
+RMS de Teltonika. No consume ningún canal analógico (equivalente a
+`noAutoPin`, igual que `BrHalf`/`PanelTemp`/`SW12` en §10, pero a diferencia
+de esos **sí tiene ejecución real**).
+
+- El equipo hace `POST /api/login` + `GET /api/modems/status` sobre HTTP
+  plano cada 60s, contra el **gateway DHCP del Opta** (no una IP fija) — el
+  router en modo LAN normalmente es ese gateway.
+- El poll **solo corre si el `.CR1` cargado declara al menos una de estas
+  instrucciones** — un Opta sin router (o con router pero `.CR1` que no las
+  usa) no genera ningún tráfico nuevo.
+- Usuario y clave del router se declaran **en el `.CR1` de cada equipo** con
+  `RouterUser=` / `RouterPass=` (§3), por el mismo mecanismo que `ServerHost=`.
+  Hasta v1.6.17 estaban hardcodeados en el firmware y eran los mismos para
+  todos los equipos que corrían ese binario; desde v1.6.18 cada sitio puede
+  tener su propia clave sin recompilar. El firmware arranca con el usuario
+  `admin` y **la clave vacía**, así que un programa con `Modem*` pero sin
+  `RouterPass=` no va a poder loguearse.
+
+> **La clave queda en texto plano dentro del `.CR1`.** Ese archivo se puede
+> descargar del equipo desde el visor de archivos del servidor, así que quien
+> tenga acceso al servidor tiene la clave del router. Conviene que la del
+> RUT200 no se reutilice en ningún otro lado, y no subir esos `.CR1` a un
+> repositorio. El firmware sí tiene el cuidado de no escribirla en el log:
+> registra `RouterPass: (definida)` y nada más.
+- Campos de texto del router (operador, ICCID, IMEI) no se exponen como
+  variable — BMP5 solo transporta `float`. Quedan solo en el log Serial del
+  Opta.
+- Si el router no responde (apagado, cable desconectado, o el Opta está en
+  una LAN sin modem pero con estas instrucciones declaradas por error), la
+  variable simplemente conserva su último valor conocido (`0` si nunca hubo
+  lectura exitosa) — no genera error de parseo ni cuelga el equipo.

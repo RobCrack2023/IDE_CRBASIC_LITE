@@ -297,17 +297,20 @@ class PanelHardware(QWidget):
                 item = QTreeWidgetItem([f"A{i}", x.name, x.kind, x.units, escala])
             self.tabla.addTopLevelItem(item)
 
-        for i, v in enumerate(p.relay_map()):
-            if v is None:
+        for i, stmts in enumerate(p.relay_map()):
+            if not stmts:
                 item = QTreeWidgetItem([f"DO{i + 1}", "—", "libre", "", ""])
                 item.setForeground(1, QColor("#8c959f"))
             else:
-                item = QTreeWidgetItem([f"DO{i + 1}", v.name, "Relé", "",
-                                        "se activa cuando la variable > 0.5"])
+                # Puede haber más de un PortSet sobre el mismo relé: el
+                # programa es libre de accionarlo desde varias ramas.
+                fuente = ", ".join(st.expr_text for st in stmts)
+                lineas = ", ".join(f"L{st.line}" for st in stmts)
+                item = QTreeWidgetItem([f"DO{i + 1}", fuente, "Relé", "",
+                                        f"PortSet en {lineas}: cierra si > 0.5"])
             self.tabla.addTopLevelItem(item)
 
-        sin_canal = [v for v in p.vars
-                     if not v.reads_hardware and not v.is_relay]
+        sin_canal = [v for v in p.vars if not v.reads_hardware]
         if sin_canal:
             item = QTreeWidgetItem([
                 "—", ", ".join(v.name for v in sin_canal), "Calculadas", "",
