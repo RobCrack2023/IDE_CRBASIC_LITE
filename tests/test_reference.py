@@ -1,10 +1,12 @@
 """Pruebas del catálogo de ayuda y de la detección del argumento activo."""
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from optabasic import limits as L  # noqa: E402
 from optabasic.reference import (  # noqa: E402
     CATALOGO,
     CATEGORIAS,
@@ -84,3 +86,42 @@ def test_indice_mas_alla_de_la_firma():
     nombre, indice = contexto_llamada(linea, 20)
     assert nombre == "AIChannel"
     assert indice >= len(buscar("AIChannel").firma_partes())
+
+
+# ── Exportación del catálogo al editor web ──────────────────────────────
+
+def test_el_catalogo_exportado_lleva_todas_las_fichas():
+    """El editor web consume esto; si falta algo, pierde la ayuda."""
+    import importlib.util
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "herramientas", "exportar_catalogo.py")
+    spec = importlib.util.spec_from_file_location("exportar_catalogo", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    datos = mod.exportar()
+    assert len(datos["instrucciones"]) == len(CATALOGO)
+    assert datos["firmware"] == L.FIRMWARE_VERSION
+
+    # Serializable tal cual: el generador escribe JSON sin más conversiones.
+    json.dumps(datos, ensure_ascii=False)
+
+    portset = next(i for i in datos["instrucciones"] if i["nombre"] == "PortSet")
+    assert portset["firma"] == "PortSet(Rele, Valor)"
+    assert portset["trampa"]                      # la trampa viaja
+    assert len(portset["parametros"]) == 2
+    assert portset["firmaPartes"] == ["Rele", "Valor"]
+
+
+def test_el_catalogo_exportado_marca_los_argumentos_ignorados():
+    """Son los que llevan a escribir programas que parecen correctos."""
+    import importlib.util
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "herramientas", "exportar_catalogo.py")
+    spec = importlib.util.spec_from_file_location("exportar_catalogo", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    datos = mod.exportar()
+    dt = next(i for i in datos["instrucciones"] if i["nombre"] == "DataTable")
+    assert any(p["ignorado"] for p in dt["parametros"])
