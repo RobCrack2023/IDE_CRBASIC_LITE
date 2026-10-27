@@ -45,6 +45,9 @@ _RECOGNIZED_UNSIMULATED = ("BRHALF", "REALTIME", "PANELTEMP", "SW12")
 #: se actualiza desde el poll HTTP cada 60 s y no consume canal analógico.
 _MODEM_INSTR = ("MODEMRSSI", "MODEMRSRP", "MODEMRSRQ", "MODEMSINR",
                 "MODEMTEMP", "MODEMNETGEN")
+#: Reloj del programa (v1.7.8). La variable se refresca cada scan con la
+#: fecha/hora LOCAL, según UTCOffset=; vale 0 hasta que el reloj sincroniza.
+_CLOCK_INSTR = ("CLOCKYYMMDD", "CLOCKHHMM")
 _COND_OPS = ((">=", CmpOp.GE), ("<=", CmpOp.LE), ("<>", CmpOp.NE),
              (">", CmpOp.GT), ("<", CmpOp.LT), ("=", CmpOp.EQ))
 
@@ -146,6 +149,8 @@ class _Parser:
             self.do_directive_str(line, "RouterUser", L.MAX_ROUTER_CRED)
         elif cr_eq(kw, "ROUTERPASS") or kw.startswith("ROUTERPASS="):
             self.do_directive_str(line, "RouterPass", L.MAX_ROUTER_CRED)
+        elif cr_eq(kw, "UTCOFFSET") or kw.startswith("UTCOFFSET="):
+            self.do_utcoffset(line)
         elif cr_eq(kw, "PUBLIC") or cr_eq(kw, "DIM"):
             self.do_public(line, kw)
         elif cr_eq(kw, "UNITS"):
@@ -180,6 +185,8 @@ class _Parser:
             self.do_battery(pl)
         elif kw in _MODEM_INSTR:
             self.do_modem(pl, kw)
+        elif kw in _CLOCK_INSTR:
+            self.do_clock(pl, kw)
         elif kw in _NOOP_KEYWORDS:
             if kw == "BEGINPROG":
                 self.result.saw_begin_prog = True
@@ -477,6 +484,34 @@ class _Parser:
         st.expr_tokens = res.tokens
         st.expr_text = expr_text.strip()
         self.prog.stmts.append(st)
+
+    # ── Reloj del programa ──────────────────────────────────────────────
+    def do_utcoffset(self, line: str) -> None:
+        """UTCOffset=N — horas respecto de UTC, admite decimales."""
+        eq = line.find("=")
+        if eq < 0:
+            self.issue("UTCOffset sin '='", code="fw-utcoffset")
+            return
+        v = c_atof(line[eq + 1:])
+        net = self.prog.network
+        net.utc_offset_line = self.line.file_no
+        if not (-14.0 <= v <= 14.0):
+            self.issue("UTCOffset fuera de rango -14..14", code="fw-utcoffset-rango")
+            return
+        net.utc_offset = v
+
+    def do_clock(self, pl: ParsedLine, kw: str) -> None:
+        """ClockYYMMDD(Dest) / ClockHHMM(Dest) — el firmware refresca Dest."""
+        if not pl.args:
+            self.issue("Clock*: falta argumento (Dest)", code="fw-clock")
+            return
+        v = self.prog.find_var(pl.args[0])
+        if v is None:
+            self.issue("Clock*: var no declarada", code="fw-clock-var")
+            return
+        v.clock_field = kw
+        v.no_auto_pin = True
+        v.hw_instr_lines.append(self.line.file_no)
 
     # ── Telemetría del router ───────────────────────────────────────────
     def do_modem(self, pl: ParsedLine, kw: str) -> None:
