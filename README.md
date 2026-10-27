@@ -137,6 +137,20 @@ la ayuda está pensada para no tener que acordarse de nada:
   ejemplos que se insertan de un clic. Buscá por lo que querés hacer
   —"pluviómetro", "relé", "promedio"— y no por el nombre. Anda sin tildes.
 
+### La misma ayuda en el editor web
+
+El editor de `.CR1` del servidor muestra estas mismas fichas al pasar el
+mouse sobre una instrucción. No son una copia hecha a mano: salen de acá,
+que es el repositorio que va calcado del firmware.
+
+```
+python herramientas/exportar_catalogo.py ../loggernet_AlternoCampbell/frontend/src/catalogoCrbasic.json
+```
+
+Hay que volver a correrlo cada vez que cambien las fichas de
+`optabasic/reference.py`, y después reconstruir el frontend. Sin argumento
+escribe por pantalla, para poder mirar el resultado antes de pisar nada.
+
 ## Atajos
 
 | Tecla | Qué hace |
