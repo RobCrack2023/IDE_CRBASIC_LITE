@@ -19,12 +19,16 @@ INSTRUCCIONES = [
     # poll HTTP al RUT200, no consume canal analógico.
     "ModemRSSI", "ModemRSRP", "ModemRSRQ", "ModemSINR", "ModemTemp",
     "ModemNetGen",
+    # Reloj del programa en hora local (v1.7.8), ver UTCOffset.
+    "ClockYYMMDD", "ClockHHMM",
     "Sample", "Average", "Maximum", "Minimum", "Totalize",
     "BrHalf", "RealTime", "PanelTemp", "SW12",
 ]
 DIRECTIVAS = ["StationName", "ServerHost", "ServerPort", "PakBusAddress",
               # Credenciales del RUT200 de cada equipo (v1.6.18).
-              "RouterUser", "RouterPass"]
+              "RouterUser", "RouterPass",
+              # Horas respecto de UTC para el reloj local (v1.7.8).
+              "UTCOffset"]
 FUNCIONES = ["Abs", "Int", "Sqr"]
 LITERALES = [
     "True", "False", "Sec", "Min", "Hour", "Day", "Msec",

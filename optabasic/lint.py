@@ -324,7 +324,7 @@ def _declaraciones(result: ParseResult) -> None:
     # Variables que nunca reciben un valor. Las Modem* sí lo reciben: se las
     # actualiza el poll al router, aunque no ocupen canal analógico.
     for v in prog.vars:
-        if v.reads_hardware or v.assigned_lines or v.modem_field:
+        if v.reads_hardware or v.assigned_lines or v.modem_field or v.clock_field:
             continue
         if v.name.upper() in ("PUBLIC", "DIM", "UNITS"):
             continue  # ya avisado como declaración indentada
@@ -471,6 +471,26 @@ def _hardware(result: ParseResult) -> None:
                     f"hardware. Agregá PortSet({n}, {v.name}) dentro del Scan.",
                     code="rele-sin-portset",
                 )
+
+    # Reloj sin zona horaria: devuelve UTC, no la hora local. Si el programa
+    # compara contra un horario de operación, dispara corrido.
+    relojes = [v for v in prog.vars if v.clock_field]
+    if relojes and prog.network.utc_offset is None:
+        diags.warning(
+            relojes[0].decl_line,
+            "El programa usa ClockYYMMDD/ClockHHMM pero no define UTCOffset=: "
+            "esas variables traen hora UTC, no la local. Si la lógica compara "
+            "contra un horario de operación, va a disparar corrida.",
+            code="reloj-sin-utcoffset",
+        )
+    elif prog.network.utc_offset is not None and not relojes:
+        diags.info(
+            prog.network.utc_offset_line,
+            "UTCOffset= está definida pero ninguna instrucción "
+            "ClockYYMMDD/ClockHHMM la usa. No afecta la hora de los registros, "
+            "que siempre se archivan en UTC.",
+            code="utcoffset-sin-reloj",
+        )
 
     # VoltDiff/VoltSE con menos de 6 argumentos: Mult y Offset se descartan
     # (OptaPakBus.ino:2732) y el escalado queda en 1.0/0.0.

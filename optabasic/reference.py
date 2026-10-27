@@ -188,6 +188,26 @@ CATALOGO: "list[Instr]" = [
         ejemplo="PakBusAddress=1",
     ),
     Instr(
+        nombre="UTCOffset",
+        firma="UTCOffset=horas",
+        resumen="Diferencia con UTC para la hora local del reloj",
+        categoria="Configuración del equipo",
+        detalle=(
+            "Cuántas horas hay que correr UTC para llegar a la hora del lugar. "
+            "Acepta decimales, así que sirve para husos de media hora: -3, "
+            "5.5, -4.5. El rango va de -14 a 14.\n\n"
+            "Solo afecta a lo que devuelven ClockYYMMDD y ClockHHMM. Los "
+            "registros de las tablas se archivan siempre en UTC, así que "
+            "cambiar esta línea no mueve el histórico."
+        ),
+        ejemplo="UTCOffset=-3",
+        trampa=(
+            "Si el programa usa ClockHHMM para decidir un horario de operación "
+            "y falta esta línea, el equipo compara contra la hora UTC y todo "
+            "pasa corrido las horas que tenga de diferencia el lugar."
+        ),
+    ),
+    Instr(
         nombre="RouterUser",
         firma="RouterUser=usuario",
         resumen="Usuario del router Teltonika de este equipo",
@@ -718,6 +738,58 @@ CATALOGO: "list[Instr]" = [
             "Abs, Int y Sqr son las TRES únicas funciones que existen. No hay "
             "Sin, Cos, Ln, Exp ni Mod: si la fórmula las necesita, hay que "
             "resolverlas con una tabla de valores y comparaciones If."
+        ),
+    ),
+
+    # ── Reloj del programa ───────────────────────────────────────────
+    Instr(
+        nombre="ClockYYMMDD",
+        firma="ClockYYMMDD(Variable)",
+        resumen="Fecha de hoy como AAMMDD",
+        categoria="Entradas",
+        detalle=(
+            "Pone en la variable la fecha del equipo con el formato AAMMDD: el "
+            "27 de octubre de 2025 es 251027. El equipo la refresca en cada "
+            "scan, así que no hay que asignarle nada.\n\n"
+            "La fecha es la local, corrida según UTCOffset. El número entra "
+            "exacto en un float, que es lo único que viaja por PakBus, y se "
+            "puede comparar directo: If (Fecha >= 251101) Then ...\n\n"
+            "No ocupa ningún canal. Es propia del Opta, no existe en un CR1000."
+        ),
+        parametros=[Param("Variable", "Dónde se guarda la fecha. Tiene que estar declarada.")],
+        ejemplo="UTCOffset=-3\nPublic Fecha_Hoy\nClockYYMMDD(Fecha_Hoy)",
+        trampa=(
+            "Vale 0 hasta que el equipo toma la hora del servidor. Es a "
+            "propósito: así una comparación contra una fecha programada no "
+            "dispara con la fecha equivocada mientras arranca. Conviene que el "
+            "programa trate el 0 como «todavía no sé la fecha».\n\n"
+            "Sin UTCOffset la fecha es la UTC, que cerca de medianoche no es la "
+            "misma que la del lugar."
+        ),
+    ),
+    Instr(
+        nombre="ClockHHMM",
+        firma="ClockHHMM(Variable)",
+        resumen="Hora actual como HHMM",
+        categoria="Entradas",
+        detalle=(
+            "Pone en la variable la hora del equipo con el formato HHMM: las "
+            "14:35 son 1435. Se refresca en cada scan, en hora local según "
+            "UTCOffset, y no ocupa ningún canal.\n\n"
+            "Sirve para encender algo en un horario sin hacer cuentas:\n\n"
+            "    If (Hora >= 800) Then Regar = 1\n"
+            "    If (Hora >= 1800) Then Regar = 0\n"
+            "    PortSet(1, Regar)"
+        ),
+        parametros=[Param("Variable", "Dónde se guarda la hora. Tiene que estar declarada.")],
+        ejemplo="UTCOffset=-3\nPublic Hora_Hoy\nClockHHMM(Hora_Hoy)",
+        trampa=(
+            "Vale 0 hasta que el reloj sincroniza, y 0 también son las 00:00. "
+            "Si la lógica enciende algo «cuando la hora es menor que X», el "
+            "arranque cae dentro de esa condición: conviene pedir además que "
+            "sea mayor que 0.\n\n"
+            "Ojo con los saltos: a las 09:59 vale 959 y a las 10:00 vale 1000, "
+            "así que un rango como «entre 950 y 1010» no son veinte minutos."
         ),
     ),
 

@@ -468,3 +468,35 @@ def test_modem_actualiza_la_variable_sin_consumir_canal():
 def test_modem_con_variable_no_declarada():
     r = parse("ModemSINR(NoExiste)\n")
     assert "fw-modem-var" in codigos(r)
+
+
+# ── Reloj del programa en hora local (v1.7.8) ───────────────────────────
+
+def test_utcoffset_admite_decimales():
+    r = parse("UTCOffset=5.5\n")
+    assert r.program.network.utc_offset == 5.5
+    assert not r.diagnostics
+
+
+def test_utcoffset_fuera_de_rango():
+    r = parse("UTCOffset=-25\n")
+    assert "fw-utcoffset-rango" in codigos(r)
+    assert r.program.network.utc_offset is None
+
+
+def test_clock_refresca_la_variable_sin_consumir_canal():
+    r = analyze("UTCOffset=-3\nPublic Fecha\nClockYYMMDD(Fecha)\n")
+    v = r.program.find_var("Fecha")
+    assert v.clock_field == "CLOCKYYMMDD"
+    assert v.pin == -1                        # no ocupa canal analógico
+    assert "var-sin-valor" not in codigos(r)  # la refresca el firmware
+
+
+def test_clock_con_variable_no_declarada():
+    assert "fw-clock-var" in codigos(parse("ClockHHMM(NoExiste)\n"))
+
+
+def test_reloj_sin_utcoffset_avisa():
+    """Sin zona horaria devuelve UTC: una comparación horaria sale corrida."""
+    r = analyze("Public Hora\nClockHHMM(Hora)\n")
+    assert "reloj-sin-utcoffset" in codigos(r)

@@ -5,7 +5,7 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 """
 
 #: Versión del firmware contra la que está calcado este motor.
-FIRMWARE_VERSION = "1.7.0"
+FIRMWARE_VERSION = "1.7.8"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11

@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.7.0**
+> **Versión de referencia.** Calcado del firmware **v1.7.8**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -145,6 +145,7 @@ firmware sirve para varios equipos):
 | `PakBusAddress=N` (1-4094) | Dirección PakBus de este logger (debe coincidir con el `node_id` configurado en el servidor). |
 | `RouterUser=usuario` | Usuario admin del router Teltonika de **este** equipo, para las instrucciones `Modem*` (§20). Máx. 31 caracteres. Sin esta línea el firmware usa `admin`. Desde v1.6.18. |
 | `RouterPass=clave` | Clave de ese usuario. Máx. 31 caracteres. **El firmware arranca con la clave vacía**: sin esta línea el login falla y las variables `Modem*` se quedan en 0. Desde v1.6.18. |
+| `UTCOffset=N` (-14 a 14) | Horas respecto de UTC para la hora **local** que devuelven `ClockYYMMDD`/`ClockHHMM` (§21). Admite decimales: `-3`, `5.5`. **No cambia la hora de los registros**, que siempre se archivan en UTC. Desde v1.7.8. |
 
 Se aceptan con o sin espacio antes del `=` (`ServerPort=6787` o
 `ServerPort = 6787`). Cambiar cualquiera de estos valores respecto al que
@@ -866,3 +867,42 @@ de esos **sí tiene ejecución real**).
   una LAN sin modem pero con estas instrucciones declaradas por error), la
   variable simplemente conserva su último valor conocido (`0` si nunca hubo
   lectura exitosa) — no genera error de parseo ni cuelga el equipo.
+
+---
+
+## 21. Reloj del programa en hora local (extensión propia, desde v1.7.8)
+
+```
+ClockYYMMDD(Dest)   ' fecha como AAMMDD — 251027 para el 27/10/2025
+ClockHHMM(Dest)     ' hora  como HHMM   — 1435 para las 14:35
+```
+
+Las dos vinculan `Dest` al reloj del equipo y la refrescan **en cada scan**,
+en hora local según `UTCOffset=` (§3). No se les asigna nada desde el
+programa y no ocupan canal analógico.
+
+Ambos valores caben exactos en un `float`, que es lo único que transporta
+BMP5, y están pensados para comparar contra un horario de operación sin
+hacer cuentas:
+
+```
+UTCOffset=-3
+
+Public Hora_Hoy, Regar
+ClockHHMM(Hora_Hoy)
+If (Hora_Hoy >= 800) Then Regar = 1
+If (Hora_Hoy >= 1800) Then Regar = 0
+PortSet(1, Regar)
+```
+
+- **Valen `0` mientras el reloj no esté sincronizado.** Es deliberado: un
+  programa que compare contra una fecha u hora programada no dispara con la
+  hora equivocada durante el arranque, antes de que el equipo tome la hora
+  del servidor. Conviene que la lógica trate el `0` como "todavía no sé qué
+  hora es" y no como medianoche.
+- **`UTCOffset=` solo afecta a estas dos instrucciones.** Los registros de
+  las tablas se archivan siempre en UTC, así que cambiarla no mueve el
+  histórico ni lo que ve el servidor.
+- Sin `UTCOffset=`, ambas devuelven hora UTC. Si la lógica compara contra un
+  horario de operación local, va a disparar corrida — el linter avisa de ese
+  caso.

@@ -50,6 +50,9 @@ class Var:
     #: Campo de telemetría del router Teltonika (v1.6.14). La variable se
     #: actualiza sola desde el poll HTTP al RUT200, sin consumir canal.
     modem_field: str = ""
+    #: Reloj del programa (v1.7.8): "CLOCKYYMMDD" o "CLOCKHHMM". La variable
+    #: se refresca sola cada scan con la fecha/hora local; no ocupa canal.
+    clock_field: str = ""
     pulse_pin: int = -1
     pulse_mult: float = 1.0
     pulse_offset: float = 0.0
@@ -83,6 +86,8 @@ class Var:
 
     @property
     def kind(self) -> str:
+        if self.clock_field:
+            return "Reloj"
         if self.modem_field:
             return "Módem"
         if self.is_pulse_count:
@@ -179,6 +184,10 @@ class Network:
     router_user_line: int = 0
     router_pass: str = ""
     router_pass_line: int = 0
+    #: Horas respecto de UTC para la hora local de ClockYYMMDD/ClockHHMM
+    #: (v1.7.8). No afecta la hora de los registros, siempre en UTC.
+    utc_offset: "float | None" = None
+    utc_offset_line: int = 0
 
     @property
     def provisioned(self) -> bool:
