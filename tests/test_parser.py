@@ -620,8 +620,14 @@ def test_medianrun_el_destino_no_consume_canal():
     assert r.program.find_var("Nivel_filt").pin == -1
 
 
-def test_medianrun_el_destino_cuenta_como_de_hardware():
-    """Lo escribe el equipo en cada scan, asi que PreserveVariables lo rechaza."""
+def test_medianrun_preservevariables_rechaza_el_destino():
+    """El equipo lo recalcula en cada scan, asi que preservarlo no sirve.
+
+    El nombre viejo decia "cuenta como de hardware", que es justo la nocion
+    conflacionada: el destino de un filtro no sale de ningun borne — el test
+    de al lado verifica que no toma pin — y lo que se comprueba aca es la
+    decision de preservacion, no de donde sale el valor.
+    """
     assert parse(_med("MedianRun(Nivel_filt, Nivel_mA, 5)")
                  ).program.find_var("Nivel_filt").is_driven
 
