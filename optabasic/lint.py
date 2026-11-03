@@ -71,7 +71,43 @@ def lint(result: ParseResult) -> ParseResult:
     _condiciones(result)
     _red(result)
     _preserve(result)
+    _mediana(result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  MedianRun (v1.9.0)
+# ─────────────────────────────────────────────────────────────────────────
+def _mediana(result: ParseResult) -> None:
+    prog, diags = result.program, result.diagnostics
+
+    for m in prog.medians:
+        dst = prog.find_var(m.dest)
+        src = prog.find_var(m.src)
+
+        # El filtro escribe el destino en cada scan, ANTES de los statements.
+        # Si el programa tambien le asigna, la asignacion gana y el filtro no
+        # sirve de nada: el sintoma es un valor sin filtrar, sin ningun aviso.
+        if dst is not None and dst.assigned_lines:
+            diags.error(
+                dst.assigned_lines[0],
+                f"«{dst.name}» recibe la mediana de «{m.src}», pero el programa "
+                "tambien le asigna un valor. El filtro corre antes que las "
+                "asignaciones, asi que la asignacion lo pisa y el valor queda "
+                "sin filtrar. Usa otra variable para el calculo.",
+                code="mediana-destino-asignado",
+            )
+
+        # Filtrar algo que no sale de un sensor casi siempre es un dedazo en
+        # el orden de los argumentos: MedianRun(destino, fuente, ventana).
+        if src is not None and not src.is_driven and not src.assigned_lines:
+            diags.warning(
+                m.line,
+                f"«{m.src}» no lee ninguna entrada ni recibe asignaciones, asi "
+                f"que la mediana va a filtrar un 0 constante. ¿Estan dados "
+                f"vuelta los argumentos? Van MedianRun(destino, fuente, ventana).",
+                code="mediana-fuente-sin-lectura",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────

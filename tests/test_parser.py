@@ -553,12 +553,25 @@ def test_preserve_con_variable_no_declarada():
     assert [v.name for v in r.program.vars if v.preserve] == ["Consigna"]
 
 
-def test_preserve_topea_en_16_nombres():
-    nombres = ["V%d" % i for i in range(20)]
-    r = parse(_prog("Public Consigna, " + ", ".join(nombres),
-                    "PreserveVariables " + ", ".join(nombres)))
+def test_preserve_topea_en_el_maximo_de_variables():
+    """El tope son los 64 de CR_MAX_VARS: no cabe mas de lo declarable."""
+    nombres = ["V%d" % i for i in range(L.MAX_PRESERVE + 6)]
+    lineas = ["PreserveVariables " + ", ".join(nombres[i:i + 10])
+              for i in range(0, len(nombres), 10)]
+    r = parse(_prog("Public Consigna", *lineas))
     assert len(r.program.preserve_names) == L.MAX_PRESERVE
     assert "preserve-limite" in codigos(r)
+
+
+def test_preserve_en_varias_lineas_se_acumula():
+    """La agenda de Colchagua son ~38 nombres y no caben en los 127 caracteres
+    de una linea: el firmware no reinicia la cuenta, las lineas suman."""
+    r = parse(_prog("Public P1_Fecha, P1_Hora, P1_Cm, P2_Fecha, P2_Hora, P2_Cm",
+                    "PreserveVariables P1_Fecha, P1_Hora, P1_Cm",
+                    "PreserveVariables P2_Fecha, P2_Hora, P2_Cm"))
+    esperados = ["P1_Fecha", "P1_Hora", "P1_Cm", "P2_Fecha", "P2_Hora", "P2_Cm"]
+    assert list(r.program.preserve_names) == esperados
+    assert [v.name for v in r.program.vars if v.preserve] == esperados
 
 
 def test_preserve_avisa_si_el_programa_calcula_el_valor():
@@ -577,3 +590,83 @@ def test_preserve_avisa_si_el_programa_calcula_el_valor():
 def test_preserve_sin_lista_sugiere_nombrar_las_consignas():
     r = analyze(_prog("Public Consigna", "PreserveVariables"))
     assert "preserve-sin-lista" in codigos(r)
+
+
+# ── MedianRun (v1.9.0) ──────────────────────────────────────────────────
+
+
+def _med(*lineas):
+    cuerpo = ["Public Nivel_mA, Nivel_filt",
+              "Units Nivel_mA = mA",
+              "AIChannel(Nivel_mA, 1)"] + list(lineas) + [
+        "DataTable(R, True, 100)",
+        "    Sample(1, Nivel_filt, FP2)",
+        "EndTable",
+    ]
+    return chr(10).join(cuerpo) + chr(10)
+
+
+def test_medianrun_declara_el_filtro():
+    r = parse(_med("MedianRun(Nivel_filt, Nivel_mA, 7)"))
+    assert len(r.program.medians) == 1
+    m = r.program.medians[0]
+    assert (m.dest, m.src, m.window) == ("Nivel_filt", "Nivel_mA", 7)
+    assert r.program.find_var("Nivel_filt").is_median
+
+
+def test_medianrun_el_destino_no_consume_canal():
+    """Lo calcula el filtro, no un borne: no entra al reparto de A0-A7."""
+    r = parse(_med("MedianRun(Nivel_filt, Nivel_mA, 5)"))
+    assert r.program.find_var("Nivel_filt").pin == -1
+
+
+def test_medianrun_el_destino_cuenta_como_de_hardware():
+    """Lo escribe el equipo en cada scan, asi que PreserveVariables lo rechaza."""
+    assert parse(_med("MedianRun(Nivel_filt, Nivel_mA, 5)")
+                 ).program.find_var("Nivel_filt").is_driven
+
+
+def test_medianrun_ventana_par_baja_a_la_impar_anterior():
+    r = parse(_med("MedianRun(Nivel_filt, Nivel_mA, 8)"))
+    assert r.program.medians[0].window == 7
+    assert "medianrun-ventana-par" in codigos(r)
+
+
+def test_medianrun_ventana_fuera_de_rango_se_topea():
+    r = parse(_med("MedianRun(Nivel_filt, Nivel_mA, 20)"))
+    assert r.program.medians[0].window == L.MEDIAN_MAX_WIN
+    assert "medianrun-ventana" in codigos(r)
+
+
+def test_medianrun_rechaza_filtrar_sobre_si_misma():
+    """Realimentaria el filtro con su propia salida."""
+    r = parse(_med("MedianRun(Nivel_mA, Nivel_mA, 5)"))
+    assert r.program.medians == []
+    assert "medianrun-misma-variable" in codigos(r)
+
+
+def test_medianrun_topea_en_cuatro_filtros():
+    lineas = ["Public a, b, c, d, e, f, g, h"]
+    lineas += ["MedianRun(%s, %s, 5)" % (x, y)
+               for x, y in (("a", "b"), ("c", "d"), ("e", "f"), ("g", "h"))]
+    lineas.append("MedianRun(Nivel_filt, Nivel_mA, 5)")
+    r = parse(_med(*lineas))
+    assert len(r.program.medians) == L.MAX_MEDIAN
+    assert "medianrun-limite" in codigos(r)
+
+
+def test_medianrun_destino_tambien_asignado_es_error():
+    """El filtro corre antes que los statements: la asignacion lo pisa."""
+    r = analyze(_med("MedianRun(Nivel_filt, Nivel_mA, 5)",
+                     "BeginProg",
+                     "    Scan(1, Sec, 0, 0)",
+                     "        Nivel_filt = Nivel_mA * 2.0",
+                     "        CallTable R",
+                     "    NextScan",
+                     "EndProg"))
+    assert "mediana-destino-asignado" in codigos(r)
+
+
+def test_medianrun_argumentos_al_reves_avisa():
+    r = analyze(_med("MedianRun(Nivel_mA, Nivel_filt, 5)"))
+    assert "mediana-fuente-sin-lectura" in codigos(r)

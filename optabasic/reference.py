@@ -108,7 +108,8 @@ CATALOGO: "list[Instr]" = [
             "esos, y es la recomendada. Sin argumentos, como en un CR1000, se "
             "preserva toda variable que escriba la plataforma, incluidas las "
             "de orden.\n\n"
-            "Acepta hasta 16 nombres separados por comas, y la linea puede ir "
+            "Acepta tantos nombres como variables se puedan declarar (64), "
+            "separados por comas, y la linea puede ir "
             "antes o despues de los Public: el equipo liga los nombres al "
             "terminar de leer el programa.\n\n"
             "El valor se vuelca unos segundos despues de la escritura, no al "
@@ -306,6 +307,62 @@ CATALOGO: "list[Instr]" = [
     ),
 
     # ── Entradas ─────────────────────────────────────────────────────
+    Instr(
+        nombre="MedianRun",
+        firma="MedianRun(Destino, Fuente, Ventana)",
+        resumen="Mediana movil para limpiar la lectura de un sensor",
+        categoria="Entradas",
+        detalle=(
+            "Guarda las ultimas N lecturas de Fuente y deja en Destino la del "
+            "medio. El dato crudo queda intacto en Fuente, asi que se pueden "
+            "archivar los dos y comparar.\n\n"
+            "Frente a un promedio, la mediana DESCARTA el pico aislado en vez de "
+            "repartirlo: un eco espurio del ultrasonico no mueve la salida. Es lo "
+            "que se quiere antes de decidir una maniobra de compuerta, donde un "
+            "solo valor raro no debe mandar a mover un motor.\n\n"
+            "El filtro corre una vez por scan, despues de leer los sensores y "
+            "ANTES de las asignaciones, asi que el programa ya trabaja con el "
+            "valor filtrado de ese mismo scan.\n\n"
+            "Mientras la ventana no se llena devuelve la mediana de lo que haya, "
+            "nunca 0: en el primer scan vale lo mismo que la lectura cruda. Desde "
+            "v1.9.0."
+        ),
+        parametros=[
+            Param(
+                nombre="Destino",
+                descripcion=(
+                    "La variable donde queda el valor filtrado. No puede ser la "
+                    "misma que Fuente, ni recibir ademas una asignacion del "
+                    "programa: el filtro corre antes y la asignacion lo pisaria."
+                ),
+            ),
+            Param(
+                nombre="Fuente",
+                descripcion="La variable con la lectura cruda del sensor.",
+            ),
+            Param(
+                nombre="Ventana",
+                descripcion=(
+                    "Cuantas muestras entran en la mediana: impar, de 3 a 9. Mas "
+                    "ventana filtra mejor pero tarda mas en seguir un cambio real "
+                    "del nivel."
+                ),
+            ),
+        ],
+        ejemplo=(
+            "Public Nivel_mA, Nivel_filt\n"
+            "Units Nivel_mA = mA\n"
+            "AIChannel(Nivel_mA, 1)\n"
+            "MedianRun(Nivel_filt, Nivel_mA, 7)"
+        ),
+        trampa=(
+            "Con ventana par no hay un valor central: el equipo baja a la impar "
+            "anterior y lo anota en el log, para que la salida siga siendo "
+            "siempre una muestra real y no el promedio de dos. Y ojo con el orden "
+            "de los argumentos: va el destino primero y la fuente despues, al "
+            "reves que en una asignacion."
+        ),
+    ),
     Instr(
         nombre="AIChannel",
         firma="AIChannel(Variable, Canal)",

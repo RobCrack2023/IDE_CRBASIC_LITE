@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.8.0**
+> **Versión de referencia.** Calcado del firmware **v1.9.0**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -736,6 +736,8 @@ EndTable
 | Tokens por expresión compilada | 20 | `CR_MAX_EXPR_TOKENS` |
 | Profundidad de anidamiento `If` | 2 niveles | `CR_IF_MAX_DEPTH` |
 | Nombres en `PreserveVariables` | 16 | `CR_MAX_PRESERVE` |
+| Filtros `MedianRun` simultáneos | 4 | `CR_MAX_MEDIAN` |
+| Ventana de `MedianRun` | 3 a 9, impar | `CR_MEDIAN_MAX_WIN` |
 | Canales analógicos A0-A7 (medición + pulso + excitación) | 8 en total | — |
 | Ritmo de conteo de `PulseCount` | 20 pulsos/s | `PULSE_DEBOUNCE_US` |
 | Nombre de variable/tabla/campo | 23 caracteres | — |
@@ -958,7 +960,9 @@ AIChannel(Nivel_cm, 1)
   `Parar`) se guarda ya consumida, así que un reinicio no repite la
   maniobra. Pero eso depende de que el programa la limpie, y conviene no
   apoyarse en ello: mejor nombrar solo las consignas.
-- **Hasta 16 nombres.** Los que sobren quedan fuera y van al log.
+- **Hasta 64 nombres**, el mismo tope que las variables declarables: todo lo
+  que el programa puede declarar se puede preservar. Los que sobren quedan
+  fuera y van al log.
 - La forma sin argumentos existe para que un `.CR1` de un CR1000 real se
   cargue sin tocarlo. Alcanza también a las variables de orden, así que
   para un programa nuevo conviene la lista explícita.
@@ -967,3 +971,59 @@ AIChannel(Nivel_cm, 1)
 > todas las variables en 0, igual que un reinicio. El equipo restaura las
 > preservadas **por nombre**, así que un ajuste al programa no se lleva las
 > consignas; una variable que el programa nuevo ya no declara se ignora.
+
+---
+
+## 23. Mediana móvil sobre un sensor — `MedianRun` (extensión propia, desde v1.9.0)
+
+```
+MedianRun(Destino, Fuente, Ventana)   ' Ventana impar, de 3 a 9
+```
+
+Guarda las últimas N lecturas de `Fuente` y deja en `Destino` la del medio.
+El dato crudo queda intacto en `Fuente`, así que se pueden archivar los dos
+y comparar.
+
+```
+Public Nivel_mA, Nivel_filt
+Units Nivel_mA = mA
+AIChannel(Nivel_mA, 1)
+MedianRun(Nivel_filt, Nivel_mA, 7)
+
+DataTable(Registro, True, 10080)
+    DataInterval(0, 1, Min, 0)
+    Sample(1, Nivel_mA,   FP2)   ' crudo
+    Sample(1, Nivel_filt, FP2)   ' filtrado
+EndTable
+```
+
+**Por qué mediana y no promedio.** La mediana *descarta* el pico aislado en
+vez de repartirlo. Un eco espurio de un ultrasónico mueve el promedio de las
+9 muestras en una novena parte de su error; a la mediana no la mueve en
+absoluto. Antes de decidir una maniobra de compuerta eso es lo que se quiere:
+que un solo valor raro no mande a mover un motor.
+
+- **Corre una vez por scan**, después de leer los sensores y **antes** de las
+  asignaciones. El programa ya trabaja con el valor filtrado de ese mismo
+  scan, no con el del anterior.
+- **Nunca devuelve 0 mientras se llena la ventana.** Da la mediana de las
+  muestras que haya, así que en el primer scan vale lo mismo que la lectura
+  cruda. Un lazo de control que arrancara mirando un 0 mandaría justo la
+  maniobra que el filtro viene a evitar.
+- **El destino no consume canal analógico**: lo calcula el filtro, no un
+  borne. Tampoco lo preserva `PreserveVariables` (§22), por la misma razón
+  que no preserva una medición: al arrancar se vuelve a calcular.
+- **Ventana par**: no hay valor central, así que el equipo baja a la impar
+  anterior y lo anota en el log. La salida sigue siendo siempre una muestra
+  real y no el promedio de dos.
+- **Hasta 4 filtros** en un mismo programa.
+
+> **El destino no puede recibir además una asignación del programa.** El
+> filtro corre antes que los statements, así que la asignación lo pisaría y el
+> valor quedaría sin filtrar, sin ningún aviso en tiempo de ejecución. El
+> linter lo marca como error.
+
+**Cuánta ventana.** Más ventana filtra mejor pero tarda más en seguir un
+cambio real: con scan de 1 s, una ventana de 9 demora unos 4 s en reflejar
+del todo un escalón de nivel. Para una compuerta que se mueve despacio eso no
+molesta; conviene ajustarlo en ensayo mirando el crudo y el filtrado juntos.

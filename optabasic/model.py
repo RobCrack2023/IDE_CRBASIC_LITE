@@ -57,6 +57,8 @@ class Var:
     #: a flash el firmware cuando la PLATAFORMA escribe la variable, no
     #: cuando el programa la calcula.
     preserve: bool = False
+    #: Su valor lo calcula un filtro de mediana movil (v1.9.0, MedianRun).
+    is_median: bool = False
 
     @property
     def is_driven(self) -> bool:
@@ -67,7 +69,7 @@ class Var:
         una medicion vieja antes de la primera lectura real.
         """
         return (self.pin >= 0 or self.is_batt_v or bool(self.modem_field)
-                or bool(self.clock_field) or self.is_pulse_count
+                or bool(self.clock_field) or self.is_pulse_count or self.is_median
                 or self.has_volt_instr)
     pulse_pin: int = -1
     pulse_mult: float = 1.0
@@ -115,6 +117,16 @@ class Var:
         if self.has_volt_instr:
             return "Voltaje"
         return "Calculada"
+
+
+@dataclass
+class Median:
+    """CRMedian: un filtro de mediana movil declarado con MedianRun."""
+
+    dest: str
+    src: str
+    window: int
+    line: int = 0
 
 
 @dataclass
@@ -230,6 +242,8 @@ class Program:
     #: {nombre pedido -> linea del archivo}, tal como se escribio.
     preserve_names: "dict[str, int]" = field(default_factory=dict)
     preserve_line: int = 0
+    #: Filtros MedianRun declarados, en orden (v1.9.0).
+    medians: "list[Median]" = field(default_factory=list)
 
     @property
     def preserve_enabled(self) -> bool:

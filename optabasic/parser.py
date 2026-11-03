@@ -21,6 +21,7 @@ from .model import (
     Cond,
     CmpOp,
     Const,
+    Median,
     Field,
     Program,
     Stmt,
@@ -157,6 +158,8 @@ class _Parser:
             self.do_utcoffset(line)
         elif cr_eq(kw, "PUBLIC") or cr_eq(kw, "DIM"):
             self.do_public(line, kw)
+        elif cr_eq(kw, "MEDIANRUN"):
+            self.do_medianrun(pl)
         elif cr_eq(kw, "PRESERVEVARIABLES"):
             self.do_preservevariables(line)
         elif cr_eq(kw, "UNITS"):
@@ -288,6 +291,61 @@ class _Parser:
             net.pakbus_address, net.address_line = v, self.line.file_no
 
     # ── Public / Dim ────────────────────────────────────────────────────
+    def do_medianrun(self, pl: ParsedLine) -> None:
+        """MedianRun(Destino, Fuente, Ventana) -> mediana movil (v1.9.0).
+
+        Replica el firmware incluido el ajuste de la ventana: fuera de rango
+        se topea, y par se baja al impar anterior para que la salida siga
+        siendo siempre una muestra real y no un promedio de dos.
+        """
+        args = pl.args
+        if len(args) < 3:
+            self.issue("MedianRun: faltan argumentos (Dest, Fuente, Ventana)",
+                       code="medianrun-argumentos")
+            return
+        if len(self.prog.medians) >= L.MAX_MEDIAN:
+            self.issue("MedianRun: max %d filtros" % L.MAX_MEDIAN,
+                       code="medianrun-limite")
+            return
+        dst = self.prog.find_var(args[0])
+        src = self.prog.find_var(args[1])
+        if dst is None or src is None:
+            self.issue("MedianRun: variable no declarada",
+                       code="medianrun-no-declarada")
+            return
+        if cr_eq(dst.name, src.name):
+            self.issue("MedianRun: destino y fuente son la misma",
+                       code="medianrun-misma-variable")
+            return
+
+        w = c_atoi(args[2])
+        if w < L.MEDIAN_MIN_WIN or w > L.MEDIAN_MAX_WIN:
+            self.issue("MedianRun: ventana fuera de %d..%d"
+                       % (L.MEDIAN_MIN_WIN, L.MEDIAN_MAX_WIN),
+                       severity=Severity.WARNING,
+                       code="medianrun-ventana",
+                       mensaje=(
+                           "MedianRun: ventana %s fuera de %d..%d, el equipo usa %d"
+                           % (args[2], L.MEDIAN_MIN_WIN, L.MEDIAN_MAX_WIN,
+                              L.MEDIAN_MIN_WIN if w < L.MEDIAN_MIN_WIN else L.MEDIAN_MAX_WIN)
+                       ))
+            w = L.MEDIAN_MIN_WIN if w < L.MEDIAN_MIN_WIN else L.MEDIAN_MAX_WIN
+        if w % 2 == 0:
+            self.issue("MedianRun: ventana par, se usa la impar anterior",
+                       severity=Severity.WARNING,
+                       code="medianrun-ventana-par",
+                       mensaje=("MedianRun: con ventana par no hay valor central, "
+                                "el equipo usa %d" % (w - 1)))
+            w -= 1
+
+        dst.is_median = True
+        dst.no_auto_pin = True   # la calcula el filtro, no un borne
+        if src.units and not dst.units:
+            dst.units = src.units
+        self.prog.medians.append(
+            Median(dest=dst.name, src=src.name, window=w,
+                   line=self.line.file_no))
+
     def do_preservevariables(self, line: str) -> None:
         """PreserveVariables [Var1, Var2, ...] -> valores que sobreviven un
         reinicio (v1.8.0).
