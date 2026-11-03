@@ -396,13 +396,22 @@ def _declaraciones(result: ParseResult) -> None:
         else:
             vistos[clave] = v.decl_line
 
-    # Variables que nunca reciben un valor. El predicado es is_driven, el
-    # mismo que usa el firmware para decidir si le escribe la variable en cada
-    # scan: cubre el canal analogico, el contador de pulsos, la bateria, el
-    # router, el reloj, VoltSE/VoltDiff y el destino de un MedianRun. Enumerar
-    # los casos a mano se desincroniza — con MedianRun paso: el destino de un
-    # filtro quedaba anunciado como que "va a valer 0 siempre" cuando en
-    # realidad el equipo lo escribe antes de cada statement.
+    # Variables que nunca reciben un valor. El predicado es is_driven: cubre el
+    # canal analógico, el contador de pulsos, la batería, el router, el reloj,
+    # VoltSE/VoltDiff y el destino de un MedianRun. Enumerar los casos a mano
+    # se desincroniza — con MedianRun pasó: el destino de un filtro quedaba
+    # anunciado como que "va a valer 0 siempre" cuando en realidad el equipo lo
+    # escribe antes de cada statement.
+    #
+    # OJO al reusar is_driven. Hoy contesta dos preguntas distintas que para
+    # sus miembros actuales dan lo mismo: «¿le escribe el equipo?», que es la
+    # de acá, y «¿preservarla es inútil?», que es la del firmware — y ahí un sí
+    # RECHAZA el nombre en PreserveVariables. Coinciden porque un canal o el
+    # reloj se recalculan en cada scan SIN CONDICIONES. Un escritor condicional
+    # las separa: le escribe el equipo, así que no está muerta, pero si en modo
+    # degradado no le escribe, preservarla es imprescindible. Cuando aparezca
+    # el primero hay que partir el predicado en dos, no volver a la lista a
+    # mano.
     for v in prog.vars:
         if v.is_driven or v.assigned_lines:
             continue
