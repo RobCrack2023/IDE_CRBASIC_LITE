@@ -91,6 +91,44 @@ CATALOGO: "list[Instr]" = [
         trampa="Misma regla que Public: sin sangría, en la columna 0.",
     ),
     Instr(
+        nombre="PreserveVariables",
+        firma="PreserveVariables Var1, Var2",
+        resumen="Consignas que sobreviven un reinicio del equipo",
+        categoria="Declaraciones",
+        detalle=(
+            "Guarda en la flash del equipo el valor de las variables que "
+            "nombra, y lo restaura al arrancar. Sirve para la consigna de un "
+            "lazo de control, una banda muerta o un horario: lo que se fija "
+            "una vez desde la plataforma y tiene que seguir ahi despues de un "
+            "corte de energia.\n\n"
+            "Sin esta linea, cada reinicio deja esas variables en 0. En un "
+            "sitio con panel solar eso no es raro, y un lazo de control que "
+            "arranca con objetivo 0 manda la maniobra equivocada.\n\n"
+            "Admite las dos formas. Con lista de nombres se preservan solo "
+            "esos, y es la recomendada. Sin argumentos, como en un CR1000, se "
+            "preserva toda variable que escriba la plataforma, incluidas las "
+            "de orden.\n\n"
+            "Acepta hasta 16 nombres separados por comas, y la linea puede ir "
+            "antes o despues de los Public: el equipo liga los nombres al "
+            "terminar de leer el programa.\n\n"
+            "El valor se vuelca unos segundos despues de la escritura, no al "
+            "instante: asi un grupo de valores que el HMI manda seguidos se "
+            "guarda de una sola vez. Desde v1.8.0."
+        ),
+        ejemplo=(
+            "Public Consigna_cm, Banda_cm\n"
+            "PreserveVariables Consigna_cm, Banda_cm"
+        ),
+        trampa=(
+            "Solo se guarda lo que escribe LA PLATAFORMA, no lo que calcula el "
+            "programa. Una variable que el propio .CR1 asigna en cada scan no "
+            "se preserva: guardarla a cada vuelta desgastaria la flash, asi "
+            "que el equipo no lo hace. Tampoco se preservan las que mide el "
+            "equipo (un canal 4-20mA, la bateria, el reloj, el router): al "
+            "arrancar se vuelven a leer igual."
+        ),
+    ),
+    Instr(
         nombre="Const",
         firma="Const Nombre = valor",
         resumen="Un número fijo con nombre, para la calibración",

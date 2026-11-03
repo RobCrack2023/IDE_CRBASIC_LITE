@@ -70,7 +70,46 @@ def lint(result: ParseResult) -> ParseResult:
     _tablas(result)
     _condiciones(result)
     _red(result)
+    _preserve(result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  PreserveVariables (v1.8.0)
+# ─────────────────────────────────────────────────────────────────────────
+def _preserve(result: ParseResult) -> None:
+    prog, diags = result.program, result.diagnostics
+    if not prog.preserve_enabled:
+        return
+
+    # La forma sin argumentos tambien alcanza a las variables de ORDEN
+    # (MoverCm, Parar). El firmware vuelca recien 3 s despues de la escritura,
+    # asi que una orden que el scan ya puso en cero se guarda consumida; pero
+    # eso depende de que el programa la limpie, y conviene no depender de eso.
+    if prog.preserve_all:
+        diags.info(
+            prog.preserve_line,
+            "PreserveVariables sin argumentos preserva TODA variable que "
+            "escriba la plataforma, incluidas las de orden como MoverCm o "
+            "Parar. Es la forma del CR1000 y el Opta la acepta, pero conviene "
+            "nombrar solo las consignas: PreserveVariables Consigna, Banda.",
+            code="preserve-sin-lista",
+        )
+
+    # El volcado lo dispara la escritura de la PLATAFORMA. Un valor que el
+    # propio programa calcula cambia en cada scan y el firmware no lo guarda:
+    # guardar a 1 Hz desgastaria la flash, asi que no lo hace.
+    for v in prog.vars:
+        if v.preserve and v.assigned_lines:
+            diags.warning(
+                v.assigned_lines[0],
+                f"«{v.name}» esta en PreserveVariables pero el programa le "
+                "asigna un valor. El Opta solo vuelca a flash cuando la "
+                "consigna la escribe la plataforma, no cuando la calcula el "
+                "programa: lo que quede guardado va a ser el ultimo valor "
+                "escrito desde afuera, no el calculado.",
+                code="preserve-calculada",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -94,6 +94,9 @@ class _Parser:
         self.in_table = False
         self.cur_tbl = -1
         self.line: SourceLine = None  # type: ignore[assignment]
+        #: Linea donde aparecio PreserveVariables, para atribuirle los
+        #: diagnosticos que se emiten al final del parseo.
+        self.preserve_src: SourceLine = None  # type: ignore[assignment]
 
     # ── Diagnóstico con el texto exacto del firmware ────────────────────
     def issue(self, reason: str, severity: Severity = Severity.ERROR, code: str = "",
@@ -128,6 +131,7 @@ class _Parser:
             self.dispatch(pl)
 
         self.assign_channels()
+        self.resolve_preserve()
         return self.result
 
     # ── Bucle principal: mismo orden de comparación que el firmware ─────
@@ -153,6 +157,8 @@ class _Parser:
             self.do_utcoffset(line)
         elif cr_eq(kw, "PUBLIC") or cr_eq(kw, "DIM"):
             self.do_public(line, kw)
+        elif cr_eq(kw, "PRESERVEVARIABLES"):
+            self.do_preservevariables(line)
         elif cr_eq(kw, "UNITS"):
             self.do_units(line)
         elif cr_eq(kw, "SCAN"):
@@ -282,6 +288,72 @@ class _Parser:
             net.pakbus_address, net.address_line = v, self.line.file_no
 
     # ── Public / Dim ────────────────────────────────────────────────────
+    def do_preservevariables(self, line: str) -> None:
+        """PreserveVariables [Var1, Var2, ...] -> valores que sobreviven un
+        reinicio (v1.8.0).
+
+        Mismo recorrido que el firmware: desde la columna 0 hasta el primer
+        espacio y despues los espacios. Sin nada detras es la forma del
+        CR1000, que preserva toda variable que escriba la plataforma.
+        """
+        self.prog.preserve_line = self.line.file_no
+        self.preserve_src = self.line
+        vp = 0
+        while vp < len(line) and not line[vp].isspace():
+            vp += 1
+        while vp < len(line) and line[vp].isspace():
+            vp += 1
+        resto = line[vp:][:119]
+        if not resto.strip():
+            self.prog.preserve_all = True
+            return
+        # Los nombres NO se resuelven aca: el firmware los liga al terminar
+        # el parseo, asi que da igual que la linea vaya antes o despues de
+        # los Public (en un CR1000 va antes).
+        for tok in resto.replace(",", " ").replace("	", " ").split():
+            if len(self.prog.preserve_names) >= L.MAX_PRESERVE:
+                self.issue(
+                    "PreserveVariables: max %d nombres" % L.MAX_PRESERVE,
+                    code="preserve-limite",
+                )
+                continue
+            self.prog.preserve_names.setdefault(
+                strncpy(tok, L.MAX_VAR_NAME), self.line.file_no)
+
+    # Igual que el firmware, la ligadura va DESPUES de repartir los canales:
+    # recien ahi se sabe cuales variables las escribe el hardware.
+    def resolve_preserve(self) -> None:
+        if not self.prog.preserve_enabled:
+            return
+        if self.preserve_src is not None:
+            self.line = self.preserve_src
+        for name in self.prog.preserve_names:
+            v = self.prog.find_var(name)
+            if v is None:
+                self.issue(
+                    "PreserveVariables: variable no declarada",
+                    severity=Severity.WARNING,
+                    code="preserve-no-declarada",
+                    mensaje=(
+                        "PreserveVariables nombra «%s», que el programa no "
+                        "declara: el Opta descarta ese nombre y sigue con el "
+                        "resto de la linea." % name
+                    ),
+                )
+            elif v.is_driven:
+                self.issue(
+                    "PreserveVariables: la mide el equipo, no se preserva",
+                    severity=Severity.WARNING,
+                    code="preserve-de-hardware",
+                    mensaje=(
+                        "«%s» la mide el equipo en cada scan, asi que el Opta "
+                        "no la preserva: al arrancar la releeria del sensor de "
+                        "todos modos. El resto de la linea sigue valiendo." % v.name
+                    ),
+                )
+            else:
+                v.preserve = True
+
     def do_public(self, line: str, kw: str) -> None:
         # Réplica exacta: el firmware avanza desde la COLUMNA 0 hasta el
         # primer espacio. Si la línea está indentada, ese bucle no avanza

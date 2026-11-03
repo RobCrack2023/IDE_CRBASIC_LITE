@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.7.8**
+> **Versión de referencia.** Calcado del firmware **v1.8.0**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -178,6 +178,12 @@ Dim Interno1, Interno2 As Float
   de arreglos en ninguna parte del parser (ni en declaraciones ni en
   expresiones).
 - Nombre máximo: 23 caracteres.
+
+---
+
+Para que el valor de una variable **sobreviva un reinicio** del equipo,
+hay que nombrarla en `PreserveVariables` (§22). Sin eso, cada arranque la
+deja en 0.
 
 ---
 
@@ -729,6 +735,7 @@ EndTable
 | Instrucciones (asignaciones + If/ElseIf/Else/EndIf) | 64 | `CR_MAX_STMTS` |
 | Tokens por expresión compilada | 20 | `CR_MAX_EXPR_TOKENS` |
 | Profundidad de anidamiento `If` | 2 niveles | `CR_IF_MAX_DEPTH` |
+| Nombres en `PreserveVariables` | 16 | `CR_MAX_PRESERVE` |
 | Canales analógicos A0-A7 (medición + pulso + excitación) | 8 en total | — |
 | Ritmo de conteo de `PulseCount` | 20 pulsos/s | `PULSE_DEBOUNCE_US` |
 | Nombre de variable/tabla/campo | 23 caracteres | — |
@@ -906,3 +913,57 @@ PortSet(1, Regar)
 - Sin `UTCOffset=`, ambas devuelven hora UTC. Si la lógica compara contra un
   horario de operación local, va a disparar corrida — el linter avisa de ese
   caso.
+
+---
+
+## 22. Consignas que sobreviven un reinicio — `PreserveVariables` (extensión propia, desde v1.8.0)
+
+```
+PreserveVariables Var1, Var2    ' solo esas (recomendado)
+PreserveVariables               ' forma del CR1000: toda variable que escriba la plataforma
+```
+
+Guarda en la flash del equipo el valor de las variables que nombra y lo
+restaura al arrancar. Es para lo que se fija **una vez** desde la
+plataforma y tiene que seguir ahí después: la consigna de un lazo de
+control, una banda muerta, un horario de operación.
+
+**Sin esta línea, cada reinicio deja esas variables en 0.** En un sitio
+alimentado por panel solar un corte no es raro, y un lazo que arranca con
+objetivo 0 manda la maniobra equivocada en vez de quedarse quieto.
+
+```
+Public Nivel_cm, Consigna_cm, Banda_cm
+PreserveVariables Consigna_cm, Banda_cm
+
+AIChannel(Nivel_cm, 1)
+```
+
+- **La línea puede ir antes o después de los `Public`.** El equipo liga los
+  nombres cuando termina de leer el programa, no cuando lee la línea. En un
+  CR1000 va en la sección de declaraciones, y ahí también funciona.
+- **Solo se guarda lo que escribe la plataforma, no lo que calcula el
+  programa.** El volcado lo dispara la escritura remota. Una variable que el
+  propio `.CR1` asigna en cada scan no se preserva: guardarla a cada vuelta
+  desgastaría la flash sin ninguna necesidad. El linter avisa de ese caso.
+- **Las variables que mide el equipo quedan fuera**, aunque se las nombre:
+  un canal 4-20mA, `Battery`, `PulseCount`, las `Modem*` y las de reloj se
+  vuelven a leer al arrancar, así que preservarlas solo serviría para
+  entregarle a la lógica una medición vieja antes de la primera lectura real.
+  El equipo lo registra en su log y sigue con el resto de la línea.
+- **El valor se vuelca unos segundos después de la escritura**, no al
+  instante. Así un grupo de valores que el HMI manda seguidos al tocar
+  Guardar se escribe de una sola vez. El efecto lateral es útil: una
+  variable de **orden** que el scan consume y pone en cero (`MoverCm`,
+  `Parar`) se guarda ya consumida, así que un reinicio no repite la
+  maniobra. Pero eso depende de que el programa la limpie, y conviene no
+  apoyarse en ello: mejor nombrar solo las consignas.
+- **Hasta 16 nombres.** Los que sobren quedan fuera y van al log.
+- La forma sin argumentos existe para que un `.CR1` de un CR1000 real se
+  cargue sin tocarlo. Alcanza también a las variables de orden, así que
+  para un programa nuevo conviene la lista explícita.
+
+> **Qué pasa al recargar el programa.** Reenviar el `.CR1` también deja
+> todas las variables en 0, igual que un reinicio. El equipo restaura las
+> preservadas **por nombre**, así que un ajuste al programa no se lleva las
+> consignas; una variable que el programa nuevo ya no declara se ignora.

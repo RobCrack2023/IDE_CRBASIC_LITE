@@ -53,6 +53,22 @@ class Var:
     #: Reloj del programa (v1.7.8): "CLOCKYYMMDD" o "CLOCKHHMM". La variable
     #: se refresca sola cada scan con la fecha/hora local; no ocupa canal.
     clock_field: str = ""
+    #: Su valor sobrevive un reinicio (v1.8.0, PreserveVariables). Lo vuelca
+    #: a flash el firmware cuando la PLATAFORMA escribe la variable, no
+    #: cuando el programa la calcula.
+    preserve: bool = False
+
+    @property
+    def is_driven(self) -> bool:
+        """cr_var_is_driven(): el equipo le escribe el valor en cada scan.
+
+        Un canal analogico, la bateria, el router, el reloj o un contador
+        de pulsos. Preservarla no sirve: al arrancar le daria a la logica
+        una medicion vieja antes de la primera lectura real.
+        """
+        return (self.pin >= 0 or self.is_batt_v or bool(self.modem_field)
+                or bool(self.clock_field) or self.is_pulse_count
+                or self.has_volt_instr)
     pulse_pin: int = -1
     pulse_mult: float = 1.0
     pulse_offset: float = 0.0
@@ -208,6 +224,17 @@ class Program:
     #: Canales declarados con ExciteCh: {índice 0-7 → línea del archivo}.
     #: Quedan como salida en alto (~3.3 V) y reservados.
     excite_channels: "dict[int, int]" = field(default_factory=dict)
+    #: PreserveVariables (v1.8.0). La forma sin argumentos preserva toda
+    #: variable que escriba la plataforma; la forma con lista, solo esas.
+    preserve_all: bool = False
+    #: {nombre pedido -> linea del archivo}, tal como se escribio.
+    preserve_names: "dict[str, int]" = field(default_factory=dict)
+    preserve_line: int = 0
+
+    @property
+    def preserve_enabled(self) -> bool:
+        """crPreserveEnabled: cualquiera de las dos formas."""
+        return self.preserve_all or bool(self.preserve_names)
 
     def find_var(self, name: str) -> "Var | None":
         """cr_find_var(): primera coincidencia case-insensitive."""
