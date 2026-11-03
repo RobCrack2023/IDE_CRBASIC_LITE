@@ -5,7 +5,7 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 """
 
 #: Versión del firmware contra la que está calcado este motor.
-FIRMWARE_VERSION = "1.7.8"
+FIRMWARE_VERSION = "1.8.0"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
@@ -22,6 +22,7 @@ MAX_STMTS = 64             # CR_MAX_STMTS — 32 hasta v1.6.11
 MAX_EXPR_TOKENS = 20       # CR_MAX_EXPR_TOKENS
 OPSTK_MAX = 20             # CR_OPSTK_MAX
 IF_MAX_DEPTH = 2           # CR_IF_MAX_DEPTH
+MAX_PRESERVE = 16          # CR_MAX_PRESERVE — nombres en PreserveVariables
 
 # ── Longitudes de nombre (strncpy del firmware) ─────────────────────────
 MAX_VAR_NAME = 23

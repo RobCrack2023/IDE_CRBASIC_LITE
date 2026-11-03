@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from optabasic import analyze, parse  # noqa: E402
+from optabasic import limits as L  # noqa: E402
 from optabasic.expr import compile_expr  # noqa: E402
 from optabasic.lexer import args_of, keyword, paren, split_lines  # noqa: E402
 from optabasic.model import StmtType  # noqa: E402
@@ -500,3 +501,79 @@ def test_reloj_sin_utcoffset_avisa():
     """Sin zona horaria devuelve UTC: una comparación horaria sale corrida."""
     r = analyze("Public Hora\nClockHHMM(Hora)\n")
     assert "reloj-sin-utcoffset" in codigos(r)
+
+
+# ── PreserveVariables (v1.8.0) ──────────────────────────────────────────
+
+
+def _prog(*lineas):
+    """Un .CR1 minimo: sin DataTable el firmware no ejecutaria nada."""
+    cuerpo = list(lineas) + [
+        "DataTable(R, True, 100)",
+        "    Sample(1, Consigna, FP2)",
+        "EndTable",
+    ]
+    return chr(10).join(cuerpo) + chr(10)
+
+
+def test_preserve_marca_las_variables_nombradas():
+    r = parse(_prog("Public Consigna, Banda",
+                    "PreserveVariables Consigna, Banda"))
+    assert [v.name for v in r.program.vars if v.preserve] == ["Consigna", "Banda"]
+    assert r.program.preserve_enabled
+    assert not r.program.preserve_all
+
+
+def test_preserve_sin_argumentos_es_la_forma_del_cr1000():
+    """Preserva toda variable que escriba la plataforma, no una lista."""
+    r = parse(_prog("Public Consigna", "PreserveVariables"))
+    assert r.program.preserve_all
+    assert r.program.preserve_enabled
+    assert [v.name for v in r.program.vars if v.preserve] == []
+
+
+def test_preserve_da_igual_el_orden_respecto_de_public():
+    """El firmware liga los nombres al terminar el parseo."""
+    r = parse(_prog("PreserveVariables Consigna", "Public Consigna"))
+    assert [v.name for v in r.program.vars if v.preserve] == ["Consigna"]
+
+
+def test_preserve_rechaza_una_variable_de_hardware():
+    """Un canal 4-20mA se relee del sensor al arrancar: preservarlo no sirve."""
+    r = parse(_prog("Public Consigna, Nivel_mA",
+                    "AIChannel(Nivel_mA, 1)",
+                    "PreserveVariables Consigna, Nivel_mA"))
+    assert [v.name for v in r.program.vars if v.preserve] == ["Consigna"]
+    assert "preserve-de-hardware" in codigos(r)
+
+
+def test_preserve_con_variable_no_declarada():
+    r = parse(_prog("Public Consigna", "PreserveVariables Consigna, NoExiste"))
+    assert "preserve-no-declarada" in codigos(r)
+    assert [v.name for v in r.program.vars if v.preserve] == ["Consigna"]
+
+
+def test_preserve_topea_en_16_nombres():
+    nombres = ["V%d" % i for i in range(20)]
+    r = parse(_prog("Public Consigna, " + ", ".join(nombres),
+                    "PreserveVariables " + ", ".join(nombres)))
+    assert len(r.program.preserve_names) == L.MAX_PRESERVE
+    assert "preserve-limite" in codigos(r)
+
+
+def test_preserve_avisa_si_el_programa_calcula_el_valor():
+    """El volcado lo dispara la plataforma, no el scan."""
+    r = analyze(_prog("Public Consigna, Calculada",
+                      "PreserveVariables Calculada",
+                      "BeginProg",
+                      "    Scan(1, Sec, 0, 0)",
+                      "        Calculada = Consigna * 2.0",
+                      "        CallTable R",
+                      "    NextScan",
+                      "EndProg"))
+    assert "preserve-calculada" in codigos(r)
+
+
+def test_preserve_sin_lista_sugiere_nombrar_las_consignas():
+    r = analyze(_prog("Public Consigna", "PreserveVariables"))
+    assert "preserve-sin-lista" in codigos(r)
