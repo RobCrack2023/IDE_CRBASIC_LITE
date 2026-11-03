@@ -670,3 +670,14 @@ def test_medianrun_destino_tambien_asignado_es_error():
 def test_medianrun_argumentos_al_reves_avisa():
     r = analyze(_med("MedianRun(Nivel_mA, Nivel_filt, 5)"))
     assert "mediana-fuente-sin-lectura" in codigos(r)
+
+
+def test_el_destino_de_una_mediana_no_es_variable_muerta():
+    """Lo escribe el filtro en cada scan, antes de los statements.
+
+    Lo encontro el programa de banco: el aviso decia que Nivel_filt "va a
+    valer 0 siempre", que es justo lo contrario de lo que pasa.
+    """
+    r = analyze(_med("MedianRun(Nivel_filt, Nivel_mA, 5)"))
+    muertas = [d.line for d in r.diagnostics if d.code == "variable-muerta"]
+    assert muertas == []

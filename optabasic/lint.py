@@ -396,10 +396,15 @@ def _declaraciones(result: ParseResult) -> None:
         else:
             vistos[clave] = v.decl_line
 
-    # Variables que nunca reciben un valor. Las Modem* sí lo reciben: se las
-    # actualiza el poll al router, aunque no ocupen canal analógico.
+    # Variables que nunca reciben un valor. El predicado es is_driven, el
+    # mismo que usa el firmware para decidir si le escribe la variable en cada
+    # scan: cubre el canal analogico, el contador de pulsos, la bateria, el
+    # router, el reloj, VoltSE/VoltDiff y el destino de un MedianRun. Enumerar
+    # los casos a mano se desincroniza — con MedianRun paso: el destino de un
+    # filtro quedaba anunciado como que "va a valer 0 siempre" cuando en
+    # realidad el equipo lo escribe antes de cada statement.
     for v in prog.vars:
-        if v.reads_hardware or v.assigned_lines or v.modem_field or v.clock_field:
+        if v.is_driven or v.assigned_lines:
             continue
         if v.name.upper() in ("PUBLIC", "DIM", "UNITS"):
             continue  # ya avisado como declaración indentada
