@@ -1023,7 +1023,33 @@ que un solo valor raro no mande a mover un motor.
 > valor quedaría sin filtrar, sin ningún aviso en tiempo de ejecución. El
 > linter lo marca como error.
 
-**Cuánta ventana.** Más ventana filtra mejor pero tarda más en seguir un
-cambio real: con scan de 1 s, una ventana de 9 demora unos 4 s en reflejar
-del todo un escalón de nivel. Para una compuerta que se mueve despacio eso no
+**Cuánta ventana, y por qué depende del scan.** La ventana se cuenta en
+**muestras, no en tiempo**, así que el intervalo del `Scan` decide cuánto dura
+en segundos. La regla es exacta: la mediana descarta una perturbación que
+ocupe **hasta la mitad de la ventana**, y sigue a la señal apenas la pasa.
+
+| Ventana | Descarta hasta | Con scan de 1 s | Con scan de 10 s |
+|---|---|---|---|
+| 3 | 1 muestra | 1 s | 10 s |
+| 5 | 2 muestras | 2 s | 20 s |
+| 9 | 4 muestras | 4 s | 40 s |
+
+Con ventana 5, tres lecturas altas seguidas ya son mayoría y el valor del
+medio es alto, así que el filtro sigue a la señal — y eso es lo correcto: tres
+lecturas seguidas no son un pico, son el nivel. Elegir la ventana es elegir
+cuánto tiene que durar algo para que el equipo se lo crea. Para dimensionarla
+hace falta saber cuánto dura la perturbación real: si el eco espurio del
+ultrasónico ensucia una sola lectura, 5 sobra; si puede ensuciar dos o tres
+seguidas, hace falta 9.
+
+El precio es el retraso: más ventana filtra mejor pero tarda más en seguir un
+cambio real. Con scan de 1 s, una ventana de 9 demora unos 4 s en reflejar del
+todo un escalón de nivel. Para una compuerta que se mueve despacio eso no
 molesta; conviene ajustarlo en ensayo mirando el crudo y el filtrado juntos.
+
+> **Al probarlo a mano, cuidado con el scan corto.** Con scan de 1 s una
+> ventana de 5 sólo descarta perturbaciones de hasta 2 segundos, y nadie
+> escribe un valor y lo vuelve a cambiar en menos de eso: todo lo que se
+> escriba a mano dura más que la ventana, y el filtro parece no filtrar
+> aunque esté funcionando bien. Para verlo hay que usar un scan largo, o
+> comparar el crudo con el filtrado sobre la señal real del sensor.
