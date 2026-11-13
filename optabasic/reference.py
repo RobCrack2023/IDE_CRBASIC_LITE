@@ -1107,6 +1107,10 @@ def contexto_llamada(linea: str, columna: int) -> "tuple[str, int] | None":
             pila[-1][1] += 1
         i += 1
 
-    if not pila or not pila[-1][0]:
+    # Un paréntesis de agrupación, como en Average(1, (a + b), FP2), no tiene
+    # nombre: la ayuda sigue siendo la de la llamada que lo contiene.
+    while pila and not pila[-1][0]:
+        pila.pop()
+    if not pila:
         return None
     return pila[-1][0], pila[-1][1]

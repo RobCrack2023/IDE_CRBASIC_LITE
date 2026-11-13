@@ -2,6 +2,7 @@
 
 from PyQt5.QtCore import QRect, QSize, QStringListModel, Qt, pyqtSignal
 from PyQt5.QtGui import (
+    QGuiApplication,
     QColor,
     QFont,
     QPainter,
@@ -78,7 +79,11 @@ class AyudaDeFirma(QFrame):
         )
         self.hide()
 
-    def mostrar(self, instr, indice: int, punto) -> None:
+    def mostrar(self, instr, indice: int, arriba, abajo) -> None:
+        """`arriba` y `abajo` son los puntos globales del borde superior e
+        inferior de la línea del cursor. El cartel va ENCIMA de la línea: el
+        desplegable de autocompletar se abre debajo y, puesto en el mismo
+        lugar, lo tapaba justo cuando más hacía falta."""
         partes = instr.firma_partes()
         if not partes:
             self.hide()
@@ -112,7 +117,13 @@ class AyudaDeFirma(QFrame):
 
         self.etiqueta.setText("<br>".join(lineas))
         self.adjustSize()
-        self.move(punto)
+        x, y = arriba.x(), arriba.y() - self.height() - 4
+        pantalla = QGuiApplication.screenAt(arriba) or QGuiApplication.primaryScreen()
+        area = pantalla.availableGeometry()
+        if y < area.top():                  # no hay lugar arriba: abajo
+            y = abajo.y() + 6
+        x = max(area.left(), min(x, area.right() - self.width()))
+        self.move(x, y)
         self.show()
 
 
@@ -378,12 +389,15 @@ class EditorCRBasic(QPlainTextEdit):
             self.ayuda_firma.hide()
             return
         rect = self.cursorRect()
-        punto = self.mapToGlobal(rect.bottomLeft())
-        punto.setY(punto.y() + 6)
-        self.ayuda_firma.mostrar(instr, indice, punto)
+        self.ayuda_firma.mostrar(instr, indice, self.mapToGlobal(rect.topLeft()),
+                                 self.mapToGlobal(rect.bottomLeft()))
 
     def focusOutEvent(self, evento):
-        self.ayuda_firma.hide()
+        # Al abrirse el desplegable de autocompletar Qt le saca el foco al
+        # editor con motivo PopupFocusReason: no es que el usuario se fue, y
+        # ocultar el cartel ahí lo hacía desaparecer justo al escribir.
+        if evento.reason() != Qt.PopupFocusReason:
+            self.ayuda_firma.hide()
         super().focusOutEvent(evento)
 
     def palabra_bajo_cursor(self) -> str:
