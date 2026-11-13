@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from optabasic import analyze, limits as L
+from optabasic import __version__, analyze, limits as L
 from optabasic.encoding import (
     aplicar_fin_de_linea,
     codificar,
@@ -26,6 +26,7 @@ from optabasic.encoding import (
 )
 
 from .deploy import DialogoEnvio
+from .usb_dialog import DialogoUSB
 from .editor import EditorCRBasic
 from .highlighter import Paleta
 from .panels import PanelHardware, PanelHlog, PanelProblemas, PanelRecursos
@@ -145,6 +146,9 @@ class VentanaPrincipal(QMainWindow):
         equipo.addAction(self._accion("&Validar programa", self.analizar, "F5"))
         equipo.addSeparator()
         equipo.addAction(self._accion("&Enviar al equipo…", self.enviar, "F9"))
+        equipo.addAction(self._accion(
+            "Rescate por &USB…", self.abrir_usb, "Ctrl+U",
+            "Bajar los registros del equipo y cargarle el programa por cable USB-C"))
 
         ver = barra.addMenu("&Ver")
         ver.addAction(self._accion("Alternar tema &oscuro", self.alternar_tema, "Ctrl+D"))
@@ -303,6 +307,39 @@ class VentanaPrincipal(QMainWindow):
 
     # ── Envío al equipo ─────────────────────────────────────────────────
     def enviar(self):
+        listo = self._programa_para_enviar()
+        if listo is not None:
+            DialogoEnvio(listo[0], listo[1], self).exec_()
+
+    def abrir_usb(self):
+        """Rescate por USB: bajar registros y cargar el programa del editor."""
+        def programa():
+            listo = self._programa_para_enviar()
+            return listo if listo is not None else (None, None)
+        DialogoUSB(programa, self.abrir_desde_equipo, self).exec_()
+
+    def abrir_desde_equipo(self, datos: bytes, nombre: str) -> bool:
+        """Pone en el editor el programa que se leyó del equipo. Devuelve
+        False si el usuario prefirió conservar lo que tenía abierto."""
+        if not self._confirmar_descarte():
+            return False
+        texto, enc = decodificar(datos)
+        self.ruta = None                     # no es un archivo de disco todavía
+        self.codificacion = enc
+        self.fin_linea = detectar_fin_de_linea(texto)
+        self.lbl_codificacion.setText(enc)
+        self.editor.setPlainText(texto)
+        self.editor.document().setModified(True)   # pide guardar al salir
+        self.analizar()
+        self._actualizar_titulo()
+        self.statusBar().showMessage(
+            f"Programa del equipo ({nombre}, {len(datos)} bytes) abierto en el "
+            "editor: guardalo para conservarlo.", 8000)
+        return True
+
+    def _programa_para_enviar(self):
+        """Valida el programa y devuelve (bytes, nombre), o None si el usuario
+        desistió o no entra en el equipo."""
         self.analizar()
         c = self.resultado.diagnostics.counts()
         if c["error"]:
@@ -315,7 +352,7 @@ class VentanaPrincipal(QMainWindow):
             )
             if r != QMessageBox.Yes:
                 self.tabs.setCurrentIndex(0)
-                return
+                return None
 
         datos = self.bytes_a_enviar()
         if len(datos) > L.MAX_PROG_BYTES:
@@ -325,10 +362,10 @@ class VentanaPrincipal(QMainWindow):
                 f"{L.MAX_PROG_BYTES}. Lo que exceda no se guarda: acortá comentarios "
                 "o dividí el programa antes de enviarlo.",
             )
-            return
+            return None
 
         nombre = os.path.basename(self.ruta) if self.ruta else "programa.CR1"
-        DialogoEnvio(datos, nombre, self).exec_()
+        return datos, nombre
 
     # ── Varios ──────────────────────────────────────────────────────────
     def _insertar(self, texto: str):
@@ -420,12 +457,13 @@ class VentanaPrincipal(QMainWindow):
     def acerca_de(self):
         QMessageBox.about(
             self, "Acerca de",
-            "<b>IDE OptaBasic</b><br><br>"
+            f"<b>IDE OptaBasic</b> — versión {__version__}<br><br>"
             "Editor y validador de CRBasic-lite para Arduino Opta con firmware "
             "OptaPakBus.<br><br>"
             "El validador es un port en Python del parser embebido en el firmware "
             "(parse_crbasic / cr_compile_expr), así que reproduce exactamente qué "
-            "líneas va a aceptar el equipo y cuáles va a descartar sin avisar.",
+            "líneas va a aceptar el equipo y cuáles va a descartar sin avisar.<br><br>"
+            "Desarrollado por <b>Ingeniería y Proyecto Ltda.</b>",
         )
 
     def closeEvent(self, evento):

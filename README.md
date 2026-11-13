@@ -159,6 +159,7 @@ escribe por pantalla, para poder mirar el resultado antes de pisar nada.
 | `F9` | lo envía al equipo |
 | `F1` | ayuda de la palabra donde está el cursor |
 | `Ctrl+M` | asistente de sensores |
+| `Ctrl+U` | rescate por USB: bajar registros y cargar el programa por cable |
 | `Ctrl+Espacio` | lista de instrucciones y variables |
 | `Ctrl+S` | guardar |
 
