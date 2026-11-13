@@ -4,8 +4,10 @@ Portados uno a uno desde los #define de OptaPakBus.ino. Si el firmware
 cambia un límite, se cambia acá y todo el IDE queda consistente.
 """
 
-#: Versión del firmware contra la que está calcado este motor.
-FIRMWARE_VERSION = "1.9.0"
+#: Versión del firmware contra la que está calcado este motor. También es
+#: la versión del IDE (`optabasic.__version__`): van juntas. La 1.9.1 y la 1.9.2 solo
+#: tocaron el USB y el manejo de archivos del equipo, no el parser ni sus límites.
+FIRMWARE_VERSION = "1.9.2"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11

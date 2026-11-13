@@ -13,6 +13,7 @@ Uso típico:
 """
 
 from .diagnostics import Diagnostic, DiagnosticList, Severity, Source
+from .limits import FIRMWARE_VERSION
 from .lint import analyze, lint
 from .model import Const, Field, Network, Program, Stmt, StmtType, Table, Var
 from .parser import ParseResult, parse
@@ -36,4 +37,4 @@ __all__ = [
     "Source",
 ]
 
-__version__ = "1.0.0"
+__version__ = FIRMWARE_VERSION
