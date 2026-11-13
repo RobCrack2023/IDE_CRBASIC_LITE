@@ -34,6 +34,7 @@ from optabasic.sensors import (
     SHUNT_NOMINAL,
     calcular_4_20,
     calcular_pulsos,
+    calcular_ultrasonico,
 )
 
 _ICONO = {ERROR: "⛔", AVISO: "⚠", "nota": "ℹ"}
@@ -125,6 +126,7 @@ class AsistenteSensor(QDialog):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._pestania_corriente(), "Sensor 4-20 mA")
+        self.tabs.addTab(self._pestania_ultrasonico(), "Ultrasónico (nivel)")
         self.tabs.addTab(self._pestania_pulsos(), "Contador de pulsos")
         self.tabs.currentChanged.connect(self._recalcular)
 
@@ -218,6 +220,78 @@ class AsistenteSensor(QDialog):
         else:
             self.c_ohm.setEnabled(True)
             self.c_ohm.setFocus()
+        self._recalcular()
+
+    # ── Pestaña de ultrasónico ──────────────────────────────────────────
+    def _pestania_ultrasonico(self) -> QWidget:
+        self.u_nombre = QLineEdit("Nivel")
+        self.u_unidad = QLineEdit("cm")
+        self.u_d4 = self._spin(0, 100000, 30.0, 2)
+        self.u_d20 = self._spin(0, 100000, 500.0, 2)
+        self.u_altura = self._spin(0, 100000, 500.0, 2)
+        self.u_ciega = self._spin(0, 100000, 0.0, 2)
+
+        self.u_resistencia = QComboBox()
+        for etiqueta, _ in RESISTENCIAS:
+            self.u_resistencia.addItem(etiqueta)
+        self.u_resistencia.currentIndexChanged.connect(self._al_cambiar_resistencia_u)
+        self.u_ohm = self._spin(1, 10000, SHUNT_NOMINAL, 1, " Ω")
+        self.u_ohm.setEnabled(False)
+
+        self.u_canal = QSpinBox()
+        self.u_canal.setRange(1, N_ANALOG)
+        self.u_canal.setPrefix("I")
+        if self.libres:
+            self.u_canal.setValue(self.libres[0])
+        self.u_voltse = QCheckBox(
+            "Leer como voltaje con VoltSE (exacto con cualquier resistencia)")
+
+        grupo_sensor = QGroupBox("Lo que dice la hoja de datos del sensor")
+        f1 = QFormLayout(grupo_sensor)
+        f1.addRow("Nombre del nivel", self.u_nombre)
+        f1.addRow("Unidad de medida", self.u_unidad)
+        f1.addRow("Distancia a 4 mA", self.u_d4)
+        f1.addRow("Distancia a 20 mA", self.u_d20)
+        f1.addRow("Zona ciega", self.u_ciega)
+
+        grupo_inst = QGroupBox("Lo que hay en la instalación")
+        f2 = QFormLayout(grupo_inst)
+        f2.addRow("Altura de montaje", self.u_altura)
+        f2.addRow("Resistencia del lazo", self.u_resistencia)
+        f2.addRow("", self.u_ohm)
+        f2.addRow("Borne de entrada", self.u_canal)
+        f2.addRow("", self.u_voltse)
+        ayuda = QLabel("Altura de montaje: distancia de la cara del sensor al "
+                       "fondo (el cero del nivel).")
+        ayuda.setWordWrap(True)
+        f2.addRow(ayuda)
+
+        self.u_resultado = _Resultado()
+
+        for w in (self.u_nombre, self.u_unidad):
+            w.textChanged.connect(self._recalcular)
+        for w in (self.u_d4, self.u_d20, self.u_altura, self.u_ciega, self.u_ohm):
+            w.valueChanged.connect(self._recalcular)
+        self.u_canal.valueChanged.connect(self._recalcular)
+        self.u_voltse.stateChanged.connect(self._recalcular)
+
+        pagina = QWidget()
+        caja = QVBoxLayout(pagina)
+        fila = QHBoxLayout()
+        fila.addWidget(grupo_sensor, 1)
+        fila.addWidget(grupo_inst, 1)
+        caja.addLayout(fila)
+        caja.addWidget(self.u_resultado, 1)
+        return pagina
+
+    def _al_cambiar_resistencia_u(self, indice: int) -> None:
+        _, valor = RESISTENCIAS[indice]
+        if valor:
+            self.u_ohm.setValue(valor)
+            self.u_ohm.setEnabled(False)
+        else:
+            self.u_ohm.setEnabled(True)
+            self.u_ohm.setFocus()
         self._recalcular()
 
     # ── Pestaña de pulsos ───────────────────────────────────────────────
@@ -346,6 +420,19 @@ class AsistenteSensor(QDialog):
                 modo="voltse" if self.c_voltse.isChecked() else "mA",
             )
             self.c_resultado.mostrar(self._escala)
+        elif self.tabs.currentIndex() == 1:
+            self._escala = calcular_ultrasonico(
+                nombre=self.u_nombre.text(),
+                dist_4ma=self.u_d4.value(),
+                dist_20ma=self.u_d20.value(),
+                altura=self.u_altura.value(),
+                zona_ciega=self.u_ciega.value(),
+                unidad=self.u_unidad.text().strip(),
+                canal=self.u_canal.value(),
+                shunt=self.u_ohm.value(),
+                modo="voltse" if self.u_voltse.isChecked() else "mA",
+            )
+            self.u_resultado.mostrar(self._escala)
         else:
             self.p_maximo.setEnabled(self.p_verificar.isChecked())
             self.p_por_minuto.setEnabled(self.p_verificar.isChecked())

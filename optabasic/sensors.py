@@ -162,6 +162,11 @@ def calcular_4_20(
         e.avisar(ERROR, "El rango de corriente está al revés o es cero: "
                         "la corriente máxima tiene que ser mayor que la mínima.")
         return e
+    if span_valor == 0:
+        e = Escala(1.0, 0.0)
+        e.avisar(ERROR, "El valor en el mínimo y en el máximo es el mismo: "
+                        "con ese rango el sensor siempre marcaría lo mismo.")
+        return e
     if shunt <= 0:
         e = Escala(1.0, 0.0)
         e.avisar(ERROR, "La resistencia shunt tiene que ser mayor que cero.")
@@ -296,13 +301,102 @@ def _codigo_4_20(nombre, esc, unidad, canal, i_min, i_max, shunt, resistor,
         "",
         "' La cuenta va SIN sangria: el equipo lee el destino desde la columna 0.",
         f"{nombre} = {nombre}_mA * {nombre}_Mult + {nombre}_Off",
+        # Tres líneas cortas y no un AND: el equipo corta la condición en 63
+        # caracteres y con un nombre largo el AND se descartaba entero.
+        f"{nombre}_Falla = 0",
         f"If ({nombre}_mA < {nombre}_Min_mA) Then {nombre}_Falla = 1",
         f"If ({nombre}_mA > {nombre}_Max_mA) Then {nombre}_Falla = 1",
-        f"If ({nombre}_mA >= {nombre}_Min_mA) AND ({nombre}_mA <= {nombre}_Max_mA) "
-        f"Then {nombre}_Falla = 0",
         "",
     ]
     return "\n".join(l for l in lineas if l is not None)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Ultrasónico de nivel (distancia al agua, salida 4-20 mA)
+# ═════════════════════════════════════════════════════════════════════════
+def calcular_ultrasonico(
+    nombre: str,
+    dist_4ma: float,
+    dist_20ma: float,
+    altura: float,
+    zona_ciega: float = 0.0,
+    unidad: str = "cm",
+    canal: int = 1,
+    shunt: float = 269.0,
+    modo: str = "mA",
+    i_min: float = 4.0,
+    i_max: float = 20.0,
+) -> Escala:
+    """Escala de un ultrasónico montado hacia abajo, con nivel calculado.
+
+    El sensor mide la DISTANCIA desde su cara hasta el agua; el nivel es
+    `altura - distancia`, con `altura` la distancia del sensor al fondo (o
+    al cero de la regla). `dist_4ma` y `dist_20ma` son las distancias que
+    el sensor tiene programadas en 4 y en 20 mA. `zona_ciega` es la
+    distancia mínima a la que el sensor ya no ve (el agua más cerca que eso
+    da un valor falso).
+
+    Reusa `calcular_4_20` para la parte eléctrica: la variable de distancia
+    se llama `<nombre>_Dist` y el nivel `<nombre>`.
+    """
+    nombre = (nombre or "Nivel").strip() or "Nivel"
+    esc = calcular_4_20(f"{nombre}_Dist", dist_4ma, dist_20ma, unidad, canal,
+                        i_min, i_max, shunt, modo)
+    if esc.hay_errores:
+        return esc
+
+    d_cerca, d_lejos = sorted((dist_4ma, dist_20ma))
+    nivel_max = altura - max(d_cerca, zona_ciega)
+    nivel_min = altura - d_lejos
+    u = f" {unidad}" if unidad else ""
+    esc.datos.append(("Nivel", f"{nombre} = {_num(altura, 3)} − distancia"))
+    esc.datos.append(("Nivel que se puede medir",
+                      f"{_num(nivel_min, 3)}{u} a {_num(nivel_max, 3)}{u}"))
+
+    if altura <= 0:
+        esc.avisar(ERROR, "La altura de montaje tiene que ser mayor que cero: "
+                          "es la distancia del sensor al fondo.")
+        return esc
+    if zona_ciega < 0:
+        esc.avisar(ERROR, "La zona ciega no puede ser negativa.")
+        return esc
+    if zona_ciega > 0 and d_cerca < zona_ciega:
+        esc.avisar(
+            AVISO,
+            f"El rango programado empieza en {_num(d_cerca, 3)}{u}, adentro de "
+            f"la zona ciega de {_num(zona_ciega, 3)}{u}. Con el agua más cerca "
+            f"que eso el sensor da un valor falso: el nivel útil llega hasta "
+            f"{_num(nivel_max, 3)}{u}, no hasta {_num(altura - d_cerca, 3)}{u}.",
+        )
+    if nivel_max <= nivel_min:
+        esc.avisar(ERROR, "Con esa altura y esa zona ciega no queda rango útil.")
+        return esc
+    if altura < d_lejos:
+        esc.avisar(
+            AVISO,
+            f"La altura ({_num(altura, 3)}{u}) es menor que la distancia "
+            f"máxima del rango ({_num(d_lejos, 3)}{u}): con el agua en el "
+            "fondo el nivel daría negativo.",
+        )
+    elif nivel_min > 0:
+        esc.avisar(
+            NOTA,
+            f"El rango del sensor no llega al fondo: por debajo de "
+            f"{_num(nivel_min, 3)}{u} la lectura queda clavada en ese valor.",
+        )
+
+    lineas = [
+        f"Const {nombre}_Altura = {_num(altura, 3)}",
+        f"Public {nombre}",
+        f"Units {nombre} = {unidad}" if unidad else None,
+        "",
+        "' Nivel = altura de montaje menos la distancia que mide el sensor.",
+        f"{nombre} = {nombre}_Altura - {nombre}_Dist",
+        "",
+    ]
+    esc.codigo = esc.codigo.rstrip("\n") + "\n" + "\n".join(
+        l for l in lineas if l is not None)
+    return esc
 
 
 # ═════════════════════════════════════════════════════════════════════════

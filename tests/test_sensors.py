@@ -23,6 +23,7 @@ from optabasic.sensors import (  # noqa: E402
     calcular_4_20,
     calcular_divisor_pulsos,
     calcular_pulsos,
+    calcular_ultrasonico,
     shunt_efectivo,
 )
 
@@ -354,3 +355,51 @@ def test_el_codigo_con_fuente_externa_pasa_el_linter():
                 "Totalize(1, Caudal_m3, FP2)\nEndTable\n")
     errores = [d for d in r.diagnostics if d.severity.value == "error"]
     assert not errores, [d.message for d in errores]
+
+
+# ── Ultrasónico de nivel ─────────────────────────────────────────────────
+def test_ultrasonico_nivel_es_altura_menos_distancia():
+    e = calcular_ultrasonico("Nivel", 30.0, 500.0, altura=500.0, unidad="cm",
+                             shunt=resistor_para(SHUNT_NOMINAL))
+    # La parte de distancia es la misma escala que el 4-20 mA normal.
+    assert e.mult == pytest.approx(29.375)
+    assert e.offset == pytest.approx(-87.5)
+    assert "Const Nivel_Altura = 500" in e.codigo
+    assert "Nivel = Nivel_Altura - Nivel_Dist" in e.codigo
+    assert not e.hay_errores
+
+
+def test_ultrasonico_zona_ciega_recorta_el_nivel_util():
+    e = calcular_ultrasonico("Nivel", 10.0, 60.0, altura=60.0, zona_ciega=20.0,
+                             unidad="cm")
+    assert any("zona ciega" in t for _, t in e.avisos)
+    assert any("40" in v for k, v in e.datos if k == "Nivel que se puede medir")
+
+
+def test_ultrasonico_rango_fuera_de_la_zona_ciega_no_avisa():
+    e = calcular_ultrasonico("Nivel", 30.0, 500.0, altura=500.0, zona_ciega=25.0)
+    assert not any("zona ciega" in t for _, t in e.avisos)
+
+
+def test_ultrasonico_altura_menor_que_el_rango_avisa_nivel_negativo():
+    e = calcular_ultrasonico("Nivel", 30.0, 500.0, altura=400.0)
+    assert any("negativo" in t for _, t in e.avisos)
+
+
+def test_ultrasonico_altura_cero_es_error():
+    assert calcular_ultrasonico("Nivel", 30.0, 500.0, altura=0.0).hay_errores
+
+
+def test_rango_de_valores_iguales_es_error():
+    assert calcular_4_20("Nivel", 5.0, 5.0, "m").hay_errores
+
+
+def test_ultrasonico_el_codigo_generado_no_tiene_errores():
+    for modo in ("mA", "voltse"):
+        e = calcular_ultrasonico("Nivel", 30.0, 500.0, altura=500.0, unidad="cm",
+                                 modo=modo)
+        r = analyze("Scan(10,Sec)\n" + e.codigo +
+                    "\nDataTable(T,True,1)\nDataInterval(0,1,Min,0)\n"
+                    "Sample(1,Nivel,FP2)\nEndTable\n")
+        errores = [d for d in r.diagnostics if d.severity.value == "error"]
+        assert not errores, (modo, [d.message for d in errores])
