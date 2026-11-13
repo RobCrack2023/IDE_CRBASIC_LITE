@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QSplitter,
     QTabWidget,
@@ -25,6 +26,8 @@ from optabasic.encoding import (
     detectar_fin_de_linea,
 )
 
+from . import tema
+from .cinta import Cinta
 from .deploy import DialogoEnvio
 from .usb_dialog import DialogoUSB
 from .editor import EditorCRBasic
@@ -45,6 +48,7 @@ class VentanaPrincipal(QMainWindow):
         self.fin_linea = "\r\n"
         self.resultado = None
         self.oscuro = False
+        self._acciones = {}        # nombre sin & ni «…» -> QAction, para la cinta
 
         self.setWindowTitle("IDE OptaBasic")
         self.resize(1180, 820)
@@ -82,10 +86,13 @@ class VentanaPrincipal(QMainWindow):
         central = QWidget()
         caja = QVBoxLayout(central)
         caja.setContentsMargins(0, 0, 0, 0)
-        caja.addWidget(self.divisor)
+        caja.setSpacing(0)
+        self.caja_central = caja
+        caja.addWidget(self.divisor, 1)
         self.setCentralWidget(central)
 
         self._crear_acciones()
+        self._crear_cinta()
         self._crear_barra_estado()
 
         self.temporizador = QTimer(self)
@@ -96,11 +103,16 @@ class VentanaPrincipal(QMainWindow):
         self.analizar()
         self.editor.document().setModified(False)
         self._actualizar_titulo()
+        self._aplicar_tema(QSettings("OptaBasic", "IDE").value("oscuro", False,
+                                                               type=bool))
 
     # ── Menús y acciones ────────────────────────────────────────────────
     def _accion(self, texto, slot, atajo=None, estado=None):
         a = QAction(texto, self)
         a.triggered.connect(slot)
+        self._acciones[texto.replace("&", "").replace("…", "").strip()] = a
+        # En la ventana misma, para que el atajo ande aunque el menú esté oculto.
+        self.addAction(a)
         if atajo:
             a.setShortcut(QKeySequence(atajo))
         if estado:
@@ -134,13 +146,7 @@ class VentanaPrincipal(QMainWindow):
             "&Asistente de sensores…", self.abrir_asistente, "Ctrl+M",
             "Calcula Mult y Offset de un sensor 4-20 mA o de un contador de pulsos"))
         insertar.addSeparator()
-        for titulo, cuerpo in PLANTILLAS:
-            if titulo is None:
-                insertar.addSeparator()
-                continue
-            insertar.addAction(
-                self._accion(titulo, lambda _=False, t=cuerpo: self._insertar(t))
-            )
+        self._llenar_plantillas(insertar)
 
         equipo = barra.addMenu("&Equipo")
         equipo.addAction(self._accion("&Validar programa", self.analizar, "F5"))
@@ -168,6 +174,75 @@ class VentanaPrincipal(QMainWindow):
         ayuda.addSeparator()
         ayuda.addAction(self._accion("&Límites del dialecto", self.mostrar_limites))
         ayuda.addAction(self._accion("&Acerca de", self.acerca_de))
+
+    def _llenar_plantillas(self, menu):
+        for titulo, cuerpo in PLANTILLAS:
+            if titulo is None:
+                menu.addSeparator()
+                continue
+            menu.addAction(
+                self._accion(titulo, lambda _=False, t=cuerpo: self._insertar(t))
+            )
+
+    def _crear_cinta(self):
+        """Cinta de opciones: agrupa las acciones que ya existen."""
+        cinta = Cinta(self._acciones)
+
+        inicio = cinta.pagina("Inicio")
+        g = inicio.grupo("Archivo")
+        for n in ("Nuevo", "Abrir", "Guardar", "Guardar como"):
+            g.agregar(cinta.boton(n))
+        g = inicio.grupo("Edición")
+        g.agregar_columna([cinta.boton(n, grande=False)
+                           for n in ("Deshacer", "Rehacer")])
+        g.agregar_columna([cinta.boton(n, grande=False)
+                           for n in ("Cortar", "Copiar", "Pegar")])
+        g = inicio.grupo("Programa")
+        g.agregar(cinta.boton("Validar programa"))
+        g.agregar(cinta.boton("Autocompletar"))
+
+        insertar = cinta.pagina("Insertar")
+        g = insertar.grupo("Sensores")
+        g.agregar(cinta.boton("Asistente de sensores"))
+        g = insertar.grupo("Plantillas")
+        self.menu_plantillas = QMenu(self)
+        self._llenar_plantillas(self.menu_plantillas)
+        g.agregar(cinta.boton("Plantillas", menu=self.menu_plantillas))
+
+        equipo = cinta.pagina("Equipo")
+        g = equipo.grupo("Programa")
+        g.agregar(cinta.boton("Validar programa"))
+        g.agregar(cinta.boton("Enviar al equipo"))
+        g = equipo.grupo("Cable USB")
+        g.agregar(cinta.boton("Rescate por USB"))
+
+        vista = cinta.pagina("Vista")
+        g = vista.grupo("Aspecto")
+        g.agregar(cinta.boton("Alternar tema oscuro"))
+        g = vista.grupo("Paneles")
+        for n in ("Ir a problemas", "Ir a recursos", "Ir a hardware",
+                  "Ir al log del equipo", "Ir a la referencia"):
+            g.agregar(cinta.boton(n))
+
+        ayuda = cinta.pagina("Ayuda")
+        g = ayuda.grupo("Ayuda")
+        for n in ("Referencia de instrucciones",
+                  "Ayuda de la palabra bajo el cursor",
+                  "Límites del dialecto", "Acerca de"):
+            g.agregar(cinta.boton(n))
+
+        self.cinta = cinta
+        self.caja_central.insertWidget(0, cinta)
+        self.menuBar().setVisible(False)       # la cinta ocupa su lugar
+
+    def _aplicar_tema(self, oscuro: bool):
+        self.oscuro = oscuro
+        tema.aplicar(QApplication.instance(), oscuro)
+        self.editor.aplicar_paleta(Paleta.OSCURA if oscuro else Paleta.CLARA)
+        self.cinta.repintar_iconos(oscuro)
+        self._acciones["Alternar tema oscuro"].setText(
+            "Tema claro" if oscuro else "Tema oscuro")
+        self.analizar()
 
     def _crear_barra_estado(self):
         self.lbl_posicion = QLabel("L1, C1")
@@ -297,7 +372,7 @@ class VentanaPrincipal(QMainWindow):
 
     def guardar_como(self) -> bool:
         ruta, _ = QFileDialog.getSaveFileName(
-            self, "Guardar programa", self.ruta or "programa.CR1",
+            self._padre(), "Guardar programa", self.ruta or "programa.CR1",
             "Programas CRBasic (*.CR1);;Todos (*)"
         )
         if not ruta:
@@ -337,35 +412,62 @@ class VentanaPrincipal(QMainWindow):
             "editor: guardalo para conservarlo.", 8000)
         return True
 
+    def _padre(self):
+        """Ventana sobre la que abrir avisos: la modal que esté arriba (el
+        diálogo del USB, por ejemplo) y si no, la principal. Con la principal
+        de padre un aviso podía quedar tapado por el diálogo."""
+        return QApplication.activeModalWidget() or self
+
     def _programa_para_enviar(self):
-        """Valida el programa y devuelve (bytes, nombre), o None si el usuario
-        desistió o no entra en el equipo."""
+        """Deja el programa listo para mandarlo al equipo y devuelve
+        (bytes, nombre), o None si no se puede o el usuario desistió.
+
+        Antes de enviar, por servidor o por USB, el programa tiene que estar
+        sin errores y guardado en disco: así lo que llega al equipo es
+        exactamente un archivo que existe y que se revisó. El equipo en
+        cambio acepta un programa con errores y descarta en silencio las
+        líneas malas, de ahí que acá no se pueda enviar «de todos modos».
+        """
+        padre = self._padre()
         self.analizar()
         c = self.resultado.diagnostics.counts()
         if c["error"]:
-            r = QMessageBox.warning(
-                self, "El programa tiene errores",
-                f"El análisis encontró {c['error']} errores. El equipo va a aceptar "
-                "el archivo igual, pero va a descartar en silencio las líneas "
-                "afectadas.\n\n¿Enviar de todos modos?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            QMessageBox.critical(
+                padre, "No se puede enviar",
+                f"El programa tiene {c['error']} error(es) y no se envía así: el "
+                "equipo descartaría en silencio las líneas afectadas.\n\n"
+                "Corregilos (están marcados en la pestaña Problemas) y volvé a "
+                "intentar.",
             )
-            if r != QMessageBox.Yes:
-                self.tabs.setCurrentIndex(0)
+            self.tabs.setCurrentIndex(0)
+            return None
+
+        if self.ruta is None or self.editor.document().isModified():
+            if self.ruta is None:
+                motivo = "El programa todavía no está guardado en un archivo."
+            else:
+                motivo = "El programa tiene cambios sin guardar."
+            r = QMessageBox.question(
+                padre, "Guardar antes de enviar",
+                f"{motivo} Hay que guardarlo antes de enviarlo, para que lo que "
+                "llega al equipo sea el archivo que quedó en el disco.\n\n"
+                "¿Guardarlo ahora?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if r != QMessageBox.Yes or not self.guardar():
                 return None
 
         datos = self.bytes_a_enviar()
         if len(datos) > L.MAX_PROG_BYTES:
             QMessageBox.critical(
-                self, "El programa no entra",
+                padre, "El programa no entra",
                 f"El archivo ocupa {len(datos)} bytes y el equipo solo almacena "
                 f"{L.MAX_PROG_BYTES}. Lo que exceda no se guarda: acortá comentarios "
                 "o dividí el programa antes de enviarlo.",
             )
             return None
 
-        nombre = os.path.basename(self.ruta) if self.ruta else "programa.CR1"
-        return datos, nombre
+        return datos, os.path.basename(self.ruta)
 
     # ── Varios ──────────────────────────────────────────────────────────
     def _insertar(self, texto: str):
@@ -430,9 +532,7 @@ class VentanaPrincipal(QMainWindow):
         self.editor.forzar_completado()
 
     def alternar_tema(self):
-        self.oscuro = not self.oscuro
-        paleta = Paleta.OSCURA if self.oscuro else Paleta.CLARA
-        self.editor.aplicar_paleta(paleta)
+        self._aplicar_tema(not self.oscuro)
         QSettings("OptaBasic", "IDE").setValue("oscuro", self.oscuro)
 
     def _actualizar_titulo(self):

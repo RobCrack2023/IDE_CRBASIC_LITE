@@ -71,10 +71,7 @@ class PanelProblemas(QWidget):
         )
         self.detalle.setWordWrap(True)
         self.detalle.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.detalle.setStyleSheet(
-            "padding: 8px 12px; background: #f6f8fa; border-top: 1px solid #d8dee4;"
-            " color: #24292f;"
-        )
+        self.detalle.setObjectName("detalle")      # lo estila gui/tema.py
         self.detalle.setMinimumHeight(56)
 
         caja = QVBoxLayout(self)
@@ -176,8 +173,7 @@ class _Medidor(QWidget):
         if usado > self.total:
             color = "#cf222e"
         self.barra.setStyleSheet(
-            "QProgressBar { background: #e9ecef; border: none; border-radius: 5px; }"
-            f"QProgressBar::chunk {{ background: {color}; border-radius: 5px; }}"
+            f"QProgressBar::chunk {{ background: {color}; border-radius: 4px; }}"
         )
         self.valor.setStyleSheet(f"color: {color}; font-weight: 600;")
 

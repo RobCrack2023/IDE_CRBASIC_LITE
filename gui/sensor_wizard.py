@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
 )
 
 from optabasic.limits import N_ANALOG
+from . import tema
 from optabasic.sensors import (
     AVISO,
     ERROR,
@@ -38,7 +39,6 @@ from optabasic.sensors import (
 )
 
 _ICONO = {ERROR: "⛔", AVISO: "⚠", "nota": "ℹ"}
-_COLOR = {ERROR: "#cf222e", AVISO: "#9a6700", "nota": "#0969da"}
 
 #: Resistencias que se ven en campo. 270 Ω es la que el firmware da por
 #: sentada; 250 Ω es la clásica de 4-20 mA a 1-5 V.
@@ -65,10 +65,7 @@ class _Resultado(QWidget):
         self.datos = QLabel()
         self.datos.setWordWrap(True)
         self.datos.setTextFormat(Qt.RichText)
-        self.datos.setStyleSheet(
-            "background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 4px;"
-            " padding: 8px;"
-        )
+        self.datos.setObjectName("tarjeta")        # lo estila gui/tema.py
 
         self.codigo = QPlainTextEdit()
         self.codigo.setReadOnly(True)
@@ -85,22 +82,23 @@ class _Resultado(QWidget):
         caja.addWidget(self.codigo, 1)
 
     def mostrar(self, escala) -> None:
+        c = tema.actual()
         filas = "".join(
-            f"<tr><td style='color:#57606a; padding-right:12px'>{k}</td>"
+            f"<tr><td style='color:{c['suave']}; padding-right:12px'>{k}</td>"
             f"<td><b>{v}</b></td></tr>"
             for k, v in escala.datos
         )
         cabeza = (
-            f"<tr><td style='color:#57606a; padding-right:12px'>Mult</td>"
-            f"<td><b style='color:#0550ae'>{escala.mult:.8g}</b></td></tr>"
-            f"<tr><td style='color:#57606a; padding-right:12px'>Offset</td>"
-            f"<td><b style='color:#0550ae'>{escala.offset:.6g}</b></td></tr>"
+            f"<tr><td style='color:{c['suave']}; padding-right:12px'>Mult</td>"
+            f"<td><b style='color:{c['acento']}'>{escala.mult:.8g}</b></td></tr>"
+            f"<tr><td style='color:{c['suave']}; padding-right:12px'>Offset</td>"
+            f"<td><b style='color:{c['acento']}'>{escala.offset:.6g}</b></td></tr>"
         )
         self.datos.setText(f"<table>{cabeza}{filas}</table>")
 
         if escala.avisos:
             partes = [
-                f"<p style='margin:4px 0; color:{_COLOR[n]}'>"
+                f"<p style='margin:4px 0; color:{tema.color_aviso(n)}'>"
                 f"{_ICONO[n]} {t}</p>"
                 for n, t in escala.avisos
             ]
@@ -135,6 +133,7 @@ class AsistenteSensor(QDialog):
                                               QDialogButtonBox.AcceptRole)
         self.btn_insertar.clicked.connect(self._insertar)
         botones.rejected.connect(self.reject)
+        botones.button(QDialogButtonBox.Close).setText("Cerrar")
 
         caja = QVBoxLayout(self)
         caja.addWidget(self.tabs)
@@ -354,10 +353,8 @@ class AsistenteSensor(QDialog):
         fc.addRow("Borne de excitación", self.p_excitacion)
         self.p_esquema = QLabel()
         self.p_esquema.setWordWrap(True)
-        self.p_esquema.setStyleSheet(
-            "font-family: Consolas, monospace; color: #0550ae; background: #f6f8fa;"
-            " border: 1px solid #d8dee4; border-radius: 4px; padding: 6px;"
-        )
+        self.p_esquema.setObjectName("tarjeta")
+        self.p_esquema.setStyleSheet("font-family: Consolas, monospace;")
         fc.addRow(self.p_esquema)
 
         self.p_resultado = _Resultado()
