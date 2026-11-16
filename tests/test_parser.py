@@ -629,7 +629,7 @@ def test_medianrun_preservevariables_rechaza_el_destino():
     decision de preservacion, no de donde sale el valor.
     """
     assert parse(_med("MedianRun(Nivel_filt, Nivel_mA, 5)")
-                 ).program.find_var("Nivel_filt").is_driven
+                 ).program.find_var("Nivel_filt").preserve_pointless
 
 
 def test_medianrun_ventana_par_baja_a_la_impar_anterior():
@@ -687,3 +687,180 @@ def test_el_destino_de_una_mediana_no_es_variable_muerta():
     r = analyze(_med("MedianRun(Nivel_filt, Nivel_mA, 5)"))
     muertas = [d.line for d in r.diagnostics if d.code == "variable-muerta"]
     assert muertas == []
+
+
+# ── SetpointSchedule (v1.9.3) ───────────────────────────────────────────
+
+
+def _sch(*lineas):
+    cuerpo = ["Public Consigna_cm, Consigna2_cm, Agenda_N, Agenda_Serie, Otra"] + list(lineas) + [
+        "DataTable(R, True, 100)",
+        "    Sample(1, Consigna_cm, FP2)",
+        "EndTable",
+    ]
+    return chr(10).join(cuerpo) + chr(10)
+
+
+def test_setpointschedule_declara_la_agenda():
+    r = parse(_sch("SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"))
+    assert len(r.program.schedules) == 1
+    s = r.program.schedules[0]
+    assert (s.dest, s.canal, s.n_var, s.serie_var) == (
+        "Consigna_cm", 1, "Agenda_N", "Agenda_Serie")
+    assert r.program.find_var("Consigna_cm").is_scheduled
+    assert r.program.find_var("Agenda_N").is_sched_info
+    assert r.program.find_var("Agenda_Serie").is_sched_info
+
+
+def test_setpointschedule_los_dos_ultimos_argumentos_son_opcionales():
+    r = parse(_sch("SetpointSchedule(Consigna_cm, 2)"))
+    assert [s.canal for s in r.program.schedules] == [2]
+    assert not r.program.find_var("Agenda_N").is_sched_info
+
+
+def test_setpointschedule_el_canal_puede_ser_una_const():
+    r = parse(_sch("Const Compuerta = 2",
+                   "SetpointSchedule(Consigna_cm, Compuerta)"))
+    assert r.program.schedules[0].canal == 2
+
+
+def test_setpointschedule_canal_fuera_de_rango_o_variable_se_rechaza():
+    for canal in ("0", "5", "1.5", "Otra", "Inexistente"):
+        r = parse(_sch("SetpointSchedule(Consigna_cm, %s)" % canal))
+        assert r.program.schedules == [], canal
+        assert "setpoint-canal" in codigos(r), canal
+
+
+def test_setpointschedule_consigna_no_declarada():
+    r = parse(_sch("SetpointSchedule(Fantasma, 1)"))
+    assert r.program.schedules == []
+    assert "setpoint-no-declarada" in codigos(r)
+
+
+def test_setpointschedule_dos_compuertas_dos_instrucciones():
+    r = parse(_sch("SetpointSchedule(Consigna_cm, 1)",
+                   "SetpointSchedule(Consigna2_cm, 2)"))
+    assert [(s.dest, s.canal) for s in r.program.schedules] == [
+        ("Consigna_cm", 1), ("Consigna2_cm", 2)]
+
+
+def test_setpointschedule_rechaza_canal_o_consigna_repetidos():
+    r = parse(_sch("SetpointSchedule(Consigna_cm, 1)",
+                   "SetpointSchedule(Consigna2_cm, 1)"))
+    assert len(r.program.schedules) == 1
+    assert "setpoint-canal-repetido" in codigos(r)
+    r = parse(_sch("SetpointSchedule(Consigna_cm, 1)",
+                   "SetpointSchedule(Consigna_cm, 2)"))
+    assert len(r.program.schedules) == 1
+    assert "setpoint-consigna-repetida" in codigos(r)
+
+
+def test_setpointschedule_rechaza_una_consigna_que_ya_maneja_otra_cosa():
+    """Si ya la escribe un filtro, la agenda y el filtro se pisarian."""
+    r = parse(_sch("MedianRun(Consigna_cm, Otra, 5)",
+                   "SetpointSchedule(Consigna_cm, 1)"))
+    assert r.program.schedules == []
+    assert "setpoint-consigna-ocupada" in codigos(r)
+
+
+def test_setpointschedule_tope_de_instrucciones():
+    lineas = ["Public a, b, c, d, e"]
+    lineas += ["SetpointSchedule(%s, %d)" % (v, i + 1)
+               for i, v in enumerate("abcd")]
+    lineas.append("SetpointSchedule(e, 1)")
+    r = parse(_sch(*lineas))
+    assert len(r.program.schedules) == L.MAX_SCHED
+    assert "setpoint-limite" in codigos(r)
+
+
+# El corazon del diseño: dos preguntas, dos predicados. La consigna de una
+# agenda NO es inutil de preservar (en modo degradado el equipo no le escribe,
+# asi que su ultimo valor tiene que sobrevivir un reinicio), pero SI esta
+# escrita por el equipo (no es variable muerta).
+
+
+def test_la_consigna_de_una_agenda_es_preservable():
+    r = parse(_sch("PreserveVariables Consigna_cm",
+                   "SetpointSchedule(Consigna_cm, 1)"))
+    v = r.program.find_var("Consigna_cm")
+    assert v.preserve
+    assert not v.preserve_pointless
+    assert "preserve-de-hardware" not in codigos(r)
+
+
+def test_la_consigna_de_una_agenda_esta_escrita_por_el_equipo():
+    v = parse(_sch("SetpointSchedule(Consigna_cm, 1)")).program.find_var("Consigna_cm")
+    assert v.is_written and not v.preserve_pointless
+
+
+def test_agenda_n_y_serie_son_inutiles_de_preservar():
+    """Salen del archivo en cada scan: preservarlas devolveria un valor viejo."""
+    r = parse(_sch("PreserveVariables Agenda_N",
+                   "SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"))
+    assert r.program.find_var("Agenda_N").preserve_pointless
+    assert "preserve-de-hardware" in codigos(r)
+
+
+def test_preserve_pointless_es_subconjunto_de_is_written():
+    """El invariante que ordena los dos predicados."""
+    r = parse(_sch("Public Bat, Reloj",
+                   "Battery(Bat, 8)",
+                   "ClockHHMM(Reloj)",
+                   "MedianRun(Otra, Bat, 5)",
+                   "SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"))
+    for v in r.program.vars:
+        if v.preserve_pointless:
+            assert v.is_written, v.name
+    # y el unico que difiere es la consigna de la agenda
+    solo = [v.name for v in r.program.vars
+            if v.is_written and not v.preserve_pointless]
+    assert solo == ["Consigna_cm"]
+
+
+def test_la_consigna_de_una_agenda_no_es_variable_muerta():
+    r = analyze(_sch("PreserveVariables Consigna_cm",
+                     "SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"))
+    muertas = {d.fragment for d in r.diagnostics if d.code == "variable-muerta"}
+    assert not any("Consigna_cm" in m or "Agenda_" in m for m in muertas)
+    nombres = [d.message for d in r.diagnostics if d.code == "variable-muerta"]
+    assert not any("Consigna_cm" in m or "Agenda_N" in m for m in nombres)
+
+
+def test_filtrar_la_consigna_de_una_agenda_no_avisa_falso_positivo():
+    """MedianRun(Suavizada, Consigna_cm, 5): la trampa de lint:103."""
+    r = analyze(_sch("Public Suavizada",
+                     "PreserveVariables Consigna_cm",
+                     "SetpointSchedule(Consigna_cm, 1)",
+                     "MedianRun(Suavizada, Consigna_cm, 5)"))
+    assert "mediana-fuente-sin-lectura" not in codigos(r)
+
+
+def test_agenda_sin_preserve_avisa():
+    r = analyze(_sch("SetpointSchedule(Consigna_cm, 1)"))
+    assert "agenda-sin-preserve" in codigos(r)
+
+
+def test_agenda_con_preserve_sin_lista_no_avisa():
+    """La forma sin argumentos tambien la cubre."""
+    r = analyze(_sch("PreserveVariables", "SetpointSchedule(Consigna_cm, 1)"))
+    assert "agenda-sin-preserve" not in codigos(r)
+
+
+def test_agenda_con_consigna_asignada_por_el_programa_avisa():
+    r = analyze(_sch("PreserveVariables Consigna_cm",
+                     "SetpointSchedule(Consigna_cm, 1)",
+                     "BeginProg",
+                     "    Scan(1, Sec, 0, 0)",
+                     "        Consigna_cm = 40",
+                     "        CallTable R",
+                     "    NextScan",
+                     "EndProg"))
+    assert "agenda-consigna-asignada" in codigos(r)
+
+
+def test_la_instruccion_esta_en_el_catalogo():
+    from optabasic.reference import buscar
+    ficha = buscar("SetpointSchedule")
+    assert ficha is not None
+    assert len(ficha.parametros) == len(ficha.firma_partes()) == 4
+    assert [p.opcional for p in ficha.parametros] == [False, False, True, True]

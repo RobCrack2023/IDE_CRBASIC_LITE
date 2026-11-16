@@ -24,6 +24,7 @@ from .model import (
     Median,
     Field,
     Program,
+    Schedule,
     Stmt,
     StmtType,
     Table,
@@ -160,6 +161,8 @@ class _Parser:
             self.do_public(line, kw)
         elif cr_eq(kw, "MEDIANRUN"):
             self.do_medianrun(pl)
+        elif cr_eq(kw, "SETPOINTSCHEDULE"):
+            self.do_setpointschedule(pl)
         elif cr_eq(kw, "PRESERVEVARIABLES"):
             self.do_preservevariables(line)
         elif cr_eq(kw, "UNITS"):
@@ -346,6 +349,76 @@ class _Parser:
             Median(dest=dst.name, src=src.name, window=w,
                    line=self.line.file_no))
 
+    def do_setpointschedule(self, pl: ParsedLine) -> None:
+        """SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie]])
+        -> liga la consigna a un canal de la agenda en archivo (v1.9.3).
+
+        Es declarativa, como PreserveVariables: el trabajo lo hace el equipo
+        en cada scan, y SOLO escribe la consigna cuando vence una entrada de
+        la tabla. Mismo orden de validaciones que el firmware.
+        """
+        args = pl.args
+        if len(args) < 2:
+            self.issue("SetpointSchedule: faltan argumentos (Consigna, Canal)",
+                       code="setpoint-argumentos")
+            return
+        if len(self.prog.schedules) >= L.MAX_SCHED:
+            self.issue("SetpointSchedule: max %d instrucciones" % L.MAX_SCHED,
+                       code="setpoint-limite")
+            return
+        dst = self.prog.find_var(args[0])
+        nv = self.prog.find_var(args[2]) if len(args) >= 3 else None
+        sv = self.prog.find_var(args[3]) if len(args) >= 4 else None
+        if dst is None:
+            self.issue("SetpointSchedule: consigna no declarada",
+                       code="setpoint-no-declarada")
+            return
+        idx, cf = self.resolve_operand(args[1])
+        # Una variable como canal cambiaria de compuerta en pleno scan: tiene
+        # que ser un literal o una Const, entera y dentro del rango.
+        if idx != -1 or cf < 1.0 or cf > float(L.MAX_CANAL) or cf != float(int(cf)):
+            self.issue("SetpointSchedule: el canal es una constante entera de 1 a %d"
+                       % L.MAX_CANAL, code="setpoint-canal")
+            return
+        if (len(args) >= 3 and nv is None) or (len(args) >= 4 and sv is None):
+            self.issue("SetpointSchedule: Agenda_N / Agenda_Serie no declaradas",
+                       code="setpoint-info-no-declarada")
+            return
+        if dst.is_scheduled:
+            self.issue("SetpointSchedule: esa consigna ya tiene agenda",
+                       code="setpoint-consigna-repetida")
+            return
+        if dst.preserve_pointless:
+            # Si ya la escribe otra cosa, las dos se pisarian en cada scan.
+            self.issue("SetpointSchedule: la consigna ya la maneja otra instruccion",
+                       code="setpoint-consigna-ocupada")
+            return
+        if (nv is not None and cr_eq(nv.name, dst.name)) or \
+           (sv is not None and cr_eq(sv.name, dst.name)) or \
+           (nv is not None and sv is not None and cr_eq(nv.name, sv.name)):
+            self.issue("SetpointSchedule: las variables tienen que ser distintas",
+                       code="setpoint-variables-repetidas")
+            return
+        canal = int(cf)
+        if any(s.canal == canal for s in self.prog.schedules):
+            self.issue("SetpointSchedule: ese canal ya esta ligado",
+                       code="setpoint-canal-repetido")
+            return
+
+        dst.is_scheduled = True
+        dst.no_auto_pin = True   # la mueve la agenda, no un borne
+        if nv is not None:
+            nv.is_sched_info = True
+            nv.no_auto_pin = True
+        if sv is not None:
+            sv.is_sched_info = True
+            sv.no_auto_pin = True
+        self.prog.schedules.append(
+            Schedule(dest=dst.name, canal=canal,
+                     n_var=nv.name if nv is not None else "",
+                     serie_var=sv.name if sv is not None else "",
+                     line=self.line.file_no))
+
     def do_preservevariables(self, line: str) -> None:
         """PreserveVariables [Var1, Var2, ...] -> valores que sobreviven un
         reinicio (v1.8.0).
@@ -398,7 +471,7 @@ class _Parser:
                         "resto de la linea." % name
                     ),
                 )
-            elif v.is_driven:
+            elif v.preserve_pointless:
                 self.issue(
                     "PreserveVariables: la mide el equipo, no se preserva",
                     severity=Severity.WARNING,

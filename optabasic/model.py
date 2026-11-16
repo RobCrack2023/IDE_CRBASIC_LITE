@@ -59,18 +59,43 @@ class Var:
     preserve: bool = False
     #: Su valor lo calcula un filtro de mediana movil (v1.9.0, MedianRun).
     is_median: bool = False
+    #: La consigna la mueve la agenda (v1.9.3, SetpointSchedule). El equipo le
+    #: escribe, pero SOLO cuando vence una entrada.
+    is_scheduled: bool = False
+    #: Agenda_N / Agenda_Serie de un SetpointSchedule: de solo lectura.
+    is_sched_info: bool = False
 
     @property
-    def is_driven(self) -> bool:
-        """cr_var_is_driven(): el equipo le escribe el valor en cada scan.
+    def preserve_pointless(self) -> bool:
+        """cr_var_preserve_pointless(): el equipo la recalcula en cada scan
+        SIN CONDICIONES, asi que preservarla es inutil.
 
-        Un canal analogico, la bateria, el router, el reloj o un contador
-        de pulsos. Preservarla no sirve: al arrancar le daria a la logica
-        una medicion vieja antes de la primera lectura real.
+        Un canal analogico, la bateria, el router, el reloj, un contador de
+        pulsos, una mediana o las dos lecturas de la agenda. Preservarla no
+        sirve: al arrancar le daria a la logica una medicion vieja antes de
+        la primera lectura real.
+
+        La consigna de un SetpointSchedule NO entra aca aunque el equipo le
+        escriba: solo cambia cuando vence una entrada, y con el reloj sin
+        sincronizar no se toca, asi que su ultimo valor tiene que sobrevivir
+        un reinicio. Es la pregunta que decide si PreserveVariables la acepta.
         """
         return (self.pin >= 0 or self.is_batt_v or bool(self.modem_field)
                 or bool(self.clock_field) or self.is_pulse_count or self.is_median
-                or self.has_volt_instr)
+                or self.has_volt_instr or self.is_sched_info)
+
+    @property
+    def is_written(self) -> bool:
+        """El equipo le asigna valor en algun momento.
+
+        Es preserve_pointless MAS la consigna de la agenda. Es la pregunta de
+        la regla de variable muerta: una consigna con agenda no esta muerta
+        aunque el programa nunca la asigne. El invariante es que
+        preserve_pointless es un subconjunto de is_written; el unico miembro
+        donde difieren es el destino de SetpointSchedule, que depende del
+        reloj y no se recalcula en cada scan.
+        """
+        return self.preserve_pointless or self.is_scheduled
     pulse_pin: int = -1
     pulse_mult: float = 1.0
     pulse_offset: float = 0.0
@@ -126,6 +151,17 @@ class Median:
     dest: str
     src: str
     window: int
+    line: int = 0
+
+
+@dataclass
+class Schedule:
+    """CRSchedule: una consigna ligada a un canal de la agenda (v1.9.3)."""
+
+    dest: str
+    canal: int
+    n_var: str = ""        # Agenda_N, opcional
+    serie_var: str = ""    # Agenda_Serie, opcional
     line: int = 0
 
 
@@ -244,6 +280,8 @@ class Program:
     preserve_line: int = 0
     #: Filtros MedianRun declarados, en orden (v1.9.0).
     medians: "list[Median]" = field(default_factory=list)
+    #: SetpointSchedule declarados, en orden (v1.9.3).
+    schedules: "list[Schedule]" = field(default_factory=list)
 
     @property
     def preserve_enabled(self) -> bool:

@@ -364,6 +364,74 @@ CATALOGO: "list[Instr]" = [
         ),
     ),
     Instr(
+        nombre="SetpointSchedule",
+        firma="SetpointSchedule(Consigna, Canal, Agenda_N, Agenda_Serie)",
+        resumen="Cambia la consigna segun una agenda de fecha y hora",
+        categoria="Entradas",
+        detalle=(
+            "Liga una variable de consigna a una agenda guardada en el equipo. "
+            "La agenda es un archivo (agenda.csv) que manda el servidor con una "
+            "linea por cambio: fecha, hora, compuerta y nivel. Caben 200 "
+            "entradas, asi que alcanza para un mes de dos niveles por dia en "
+            "dos compuertas.\n\n"
+            "El equipo toma la entrada mas reciente que ya vencio y escribe su "
+            "nivel en Consigna. Lo hace SOLO cuando esa entrada cambia, no en "
+            "cada scan: si el operador corrige la consigna a mano, su valor "
+            "aguanta hasta el proximo cambio programado en vez de volver atras.\n\n"
+            "Sigue la agenda por si mismo durante un corte de enlace: no "
+            "necesita al servidor para cambiar de nivel. Si el reloj no esta "
+            "sincronizado no toca nada y la consigna queda en el ultimo valor.\n\n"
+            "Una instruccion por compuerta, hasta 4. Gasta 1 instruccion y 1 a "
+            "3 variables, en vez de las 3 variables y 2 instrucciones por "
+            "entrada de una escalera de If. Desde v1.9.3."
+        ),
+        parametros=[
+            Param(
+                nombre="Consigna",
+                descripcion=(
+                    "La variable que mueve la agenda: el nivel que el lazo "
+                    "trata de mantener. Conviene ponerla en PreserveVariables."
+                ),
+            ),
+            Param(
+                nombre="Canal",
+                descripcion=(
+                    "Que compuerta de la agenda es: un numero entero de 1 a 4, "
+                    "literal o Const. Dos instrucciones no pueden usar el mismo."
+                ),
+            ),
+            Param(
+                nombre="Agenda_N",
+                descripcion=(
+                    "Variable de solo lectura donde el equipo deja cuantas "
+                    "entradas tiene cargadas de este canal."
+                ),
+                opcional=True,
+            ),
+            Param(
+                nombre="Agenda_Serie",
+                descripcion=(
+                    "Variable de solo lectura con el numero de serie de la "
+                    "agenda cargada. El servidor lo cambia en cada edicion: "
+                    "asi se ve desde el HMI si el equipo tiene la vigente."
+                ),
+                opcional=True,
+            ),
+        ],
+        ejemplo=(
+            "Public Consigna_cm, Agenda_N, Agenda_Serie\n"
+            "PreserveVariables Consigna_cm\n"
+            "SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"
+        ),
+        trampa=(
+            "El programa NO debe asignarle valor a la consigna en cada scan: "
+            "la agenda escribe antes de las asignaciones y esa asignacion la "
+            "pisa. Y sin PreserveVariables, si el equipo reinicia sin reloj "
+            "sincronizado la consigna arranca en 0 y nadie la corrige hasta "
+            "que haya hora."
+        ),
+    ),
+    Instr(
         nombre="AIChannel",
         firma="AIChannel(Variable, Canal)",
         resumen="Fija a mano en qué borne físico está conectado un sensor",

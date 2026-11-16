@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.9.2**
+> **Versión de referencia.** Calcado del firmware **v1.9.3**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -590,12 +590,15 @@ Altura_cm = Dist_Cerrada_cm - (Dist_mA * Dist_Mult + Dist_Off)
   `noAutoPin` (no participa de la asignación automática de canal, salvo que
   también tenga una instrucción `VoltDiff`/`VoltSE` real, en cuyo caso esa
   gana).
-- Máximo **64 instrucciones totales** en todo el programa (`CR_MAX_STMTS=64`,
-  eran 32 hasta v1.6.11), contando asignaciones **y** cada
-  `If`/`ElseIf`/`Else`/`EndIf` como una instrucción cada uno.
+- Máximo **128 instrucciones totales** en todo el programa (`CR_MAX_STMTS=128`,
+  eran 64 hasta v1.9.2 y 32 hasta v1.6.11), contando asignaciones **y** cada
+  `If`/`ElseIf`/`Else`/`EndIf` como una instrucción cada uno. Se subió a 128 en
+  v1.9.3 porque dos compuertas en un mismo Opta necesitan ~76: un lazo de
+  compuerta gasta ~38 y no hay bucles ni subrutinas, así que el segundo es una
+  copia del primero.
 
 > **Este es el techo real de complejidad de un programa**, no el tamaño del
-> archivo. El buffer de 16 KB da para mucho más texto del que 64 instrucciones
+> archivo. El buffer de 16 KB da para mucho más texto del que 128 instrucciones
 > pueden ocupar, así que lo que llena un `.CR1` son los comentarios, no la
 > lógica. Antes de ampliar nada, medí contra este límite:
 > `programa_compuerta.CR1` llenaba el buffer de 8 KB con un 63% de comentarios
@@ -732,12 +735,15 @@ EndTable
 | Constantes (`Const`) | 16 | `CR_MAX_CONSTS` |
 | Tablas (`DataTable`) | 4 | `CR_MAX_TABLES` |
 | Campos por tabla | 32 | `CR_MAX_FIELDS` |
-| Instrucciones (asignaciones + If/ElseIf/Else/EndIf) | 64 | `CR_MAX_STMTS` |
+| Instrucciones (asignaciones + If/ElseIf/Else/EndIf) | 128 | `CR_MAX_STMTS` |
 | Tokens por expresión compilada | 20 | `CR_MAX_EXPR_TOKENS` |
 | Profundidad de anidamiento `If` | 2 niveles | `CR_IF_MAX_DEPTH` |
 | Nombres en `PreserveVariables` | 16 | `CR_MAX_PRESERVE` |
 | Filtros `MedianRun` simultáneos | 4 | `CR_MAX_MEDIAN` |
 | Ventana de `MedianRun` | 3 a 9, impar | `CR_MEDIAN_MAX_WIN` |
+| `SetpointSchedule` simultáneos (uno por compuerta) | 4 | `CR_MAX_SCHED` |
+| Entradas de la agenda `agenda.csv` | 200 en total | `CR_MAX_AGENDA` |
+| Tamaño del `agenda.csv` | 8191 bytes | `AGENDA_BUF_BYTES` |
 | Canales analógicos A0-A7 (medición + pulso + excitación) | 8 en total | — |
 | Ritmo de conteo de `PulseCount` | 20 pulsos/s | `PULSE_DEBOUNCE_US` |
 | Nombre de variable/tabla/campo | 23 caracteres | — |
@@ -1053,3 +1059,98 @@ molesta; conviene ajustarlo en ensayo mirando el crudo y el filtrado juntos.
 > escriba a mano dura más que la ventana, y el filtro parece no filtrar
 > aunque esté funcionando bien. Para verlo hay que usar un scan largo, o
 > comparar el crudo con el filtrado sobre la señal real del sensor.
+
+
+---
+
+## 24. Agenda de consignas — `SetpointSchedule` (extensión propia, desde v1.9.3)
+
+```
+SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie]])
+```
+
+Cambia una consigna según una **agenda de fecha y hora** guardada en el equipo.
+Pensada para programar el nivel de un río que debe mantener una compuerta: dos
+niveles por día durante semanas, sin escribir una escalera de `If`.
+
+```
+Public Consigna_cm, Agenda_N, Agenda_Serie
+Units Consigna_cm = cm
+PreserveVariables Consigna_cm
+SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)
+```
+
+**La agenda es un archivo, no código.** El servidor arma `USR:agenda.csv` y lo
+manda al equipo; el `.CR1` gasta **una instrucción** y de 1 a 3 variables por
+compuerta. Una escalera de `If` gastaba 3 variables y 2 instrucciones por
+entrada y topaba en unas 12; la agenda admite **200 entradas** (un mes de dos
+niveles por día en dos compuertas son unas 124).
+
+Formato del archivo, una entrada por línea, con **decimal en punto**:
+
+```
+#AGENDA 2,47
+261103,0810,1,45.0
+261103,0810,2,38.0
+261103,1430,1,52.5
+```
+
+- La primera línea es obligatoria: `#AGENDA <formato>,<serie>`. El formato es 2.
+  La **serie** la sube el servidor en cada cambio del calendario.
+- Cada entrada es `AAMMDD,HHMM,canal,cm`. El **canal** es la compuerta (1 a 4).
+- Las líneas que empiezan con `#` y las vacías se ignoran. No hace falta que
+  vengan ordenadas.
+- **Una línea mala rechaza el archivo entero** y el equipo conserva la agenda
+  anterior. Una agenda aplicada a medias es peor que una vieja, porque nadie se
+  entera de que falta algo.
+
+**Cuándo escribe la consigna.** El equipo toma la entrada **más reciente que ya
+venció** para ese canal y escribe su nivel, pero **sólo cuando esa entrada
+cambia**, no en cada scan. Por eso el ajuste manual del operador aguanta hasta
+el próximo cambio programado: si la agenda escribiera siempre, la consigna que
+el operador tocó desde el HMI volvería atrás en menos de un scan.
+
+- **Corre sola durante los cortes de enlace.** La agenda vive en el equipo: no
+  necesita al servidor para cambiar de nivel.
+- **Sin reloj sincronizado no toca nada.** La consigna queda en su último valor.
+  La hora es la **local** (`UTCOffset=`, §21), así que si la zona cambia de
+  hora en invierno conviene que el servidor convierta las horas al generar el
+  archivo.
+- **Un reinicio con reloj sincronizado reaplica la agenda** y descarta el
+  ajuste manual: es lo correcto, porque la agenda es la fuente de verdad.
+- **Se persiste sólo si el valor cambia**, así dos entradas seguidas con el
+  mismo nivel no gastan flash.
+- **Una agenda nueva (otra serie) se reevalúa entera.** Si se corrige el nivel
+  de un horario que ya pasó, la corrección se aplica. Reenviar la misma serie no
+  toca nada, así un reenvío redundante no se come un ajuste manual.
+
+**Argumentos.**
+
+| Argumento | Qué es |
+|---|---|
+| `Consigna` | La variable que mueve la agenda: el nivel que el lazo mantiene. |
+| `Canal` | La compuerta, **entero de 1 a 4, literal o `Const`**. Una variable no sirve: cambiaría de compuerta en pleno scan. Dos instrucciones no pueden compartirlo. |
+| `Agenda_N` | Opcional, de solo lectura: cuántas entradas tiene cargadas **este canal**. |
+| `Agenda_Serie` | Opcional, de solo lectura: la serie de la agenda cargada. El HMI la usa para ver si el equipo tiene la vigente sin leerle el archivo. |
+
+> **La consigna sí se preserva, a diferencia de una medición.** Con el reloj
+> sin sincronizar el equipo no le escribe, y su último valor tiene que
+> sobrevivir un reinicio. Por eso `PreserveVariables Consigna_cm` (§22) se
+> acepta. Sin esa línea, un reinicio sin hora deja la consigna en 0 y el lazo
+> trabaja con ese objetivo; el linter lo avisa. En cambio `Agenda_N` y
+> `Agenda_Serie` salen del archivo en cada scan y **no** se preservan.
+
+> **El programa no debe asignarle valor a la consigna en cada scan.** La agenda
+> escribe antes de las asignaciones, así que esa asignación la pisa. Una
+> asignación condicional (un override propio) es legítima y el linter sólo avisa.
+
+**Dos compuertas en un equipo** llevan dos instrucciones, una por canal, cada
+una con su propia consigna:
+
+```
+SetpointSchedule(Consigna1_cm, 1, Agenda_N1, Agenda_Serie)
+SetpointSchedule(Consigna2_cm, 2, Agenda_N2)
+```
+
+Cada canal guarda por separado cuál fue su última entrada aplicada, así que el
+cambio de una compuerta no afecta a la otra.

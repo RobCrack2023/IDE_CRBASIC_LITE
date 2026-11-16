@@ -72,7 +72,64 @@ def lint(result: ParseResult) -> ParseResult:
     _red(result)
     _preserve(result)
     _mediana(result)
+    _agenda(result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  SetpointSchedule (v1.9.3)
+# ─────────────────────────────────────────────────────────────────────────
+def _agenda(result: ParseResult) -> None:
+    prog, diags = result.program, result.diagnostics
+
+    for sc in prog.schedules:
+        dst = prog.find_var(sc.dest)
+        if dst is None:
+            continue
+
+        # Sin PreserveVariables la consigna arranca en 0 tras un reinicio. Si
+        # el reloj todavia no sincronizo —un corte de luz con el enlace caido es
+        # justo el caso— el equipo no toca la consigna, y el lazo de control
+        # trabaja con objetivo 0 hasta que haya hora. En una compuerta eso es
+        # una maniobra equivocada.
+        # La forma sin argumentos tambien la cubre: el firmware la marca como
+        # preservada la primera vez que la agenda le cambia el valor.
+        if not (dst.preserve or prog.preserve_all):
+            diags.warning(
+                sc.line,
+                f"«{dst.name}» tiene agenda pero no esta en PreserveVariables. "
+                "Si el equipo reinicia sin reloj sincronizado, la consigna "
+                "arranca en 0 y el lazo trabaja con ese objetivo hasta que "
+                f"llegue la hora. Agrega «PreserveVariables {dst.name}».",
+                code="agenda-sin-preserve",
+            )
+
+        # El equipo escribe la consigna antes de los statements. Una asignacion
+        # incondicional del programa la pisa en cada scan y la agenda no sirve
+        # de nada; una condicional (un override propio) si es legitima, asi que
+        # solo se avisa, no se rechaza.
+        if dst.assigned_lines:
+            diags.warning(
+                dst.assigned_lines[0],
+                f"«{dst.name}» la mueve la agenda (SetpointSchedule, linea "
+                f"{sc.line}) y ademas el programa le asigna un valor. Si la "
+                "asignacion corre en cada scan, pisa a la agenda en el scan "
+                "siguiente a cada cambio.",
+                code="agenda-consigna-asignada",
+            )
+
+        # Agenda_N y Agenda_Serie las escribe el equipo en cada scan: lo que
+        # el programa les asigne se pierde.
+        for nombre in (sc.n_var, sc.serie_var):
+            v = prog.find_var(nombre) if nombre else None
+            if v is not None and v.assigned_lines:
+                diags.warning(
+                    v.assigned_lines[0],
+                    f"«{v.name}» la escribe el equipo en cada scan "
+                    "(SetpointSchedule) y es de solo lectura: lo que le asigne "
+                    "el programa se pierde.",
+                    code="agenda-info-asignada",
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -100,7 +157,12 @@ def _mediana(result: ParseResult) -> None:
 
         # Filtrar algo que no sale de un sensor casi siempre es un dedazo en
         # el orden de los argumentos: MedianRun(destino, fuente, ventana).
-        if src is not None and not src.is_driven and not src.assigned_lines:
+        # El predicado es is_written y no preserve_pointless: la pregunta es
+        # «¿alguien le escribe a la fuente?». Filtrar la consigna que mueve una
+        # agenda es legitimo (MedianRun(Suavizada, Consigna_cm, 5)): con
+        # preserve_pointless la consigna daria false y el aviso saltaria como
+        # falso positivo, «va a filtrar un 0 constante».
+        if src is not None and not src.is_written and not src.assigned_lines:
             diags.warning(
                 m.line,
                 f"«{m.src}» no lee ninguna entrada ni recibe asignaciones, asi "
@@ -396,24 +458,22 @@ def _declaraciones(result: ParseResult) -> None:
         else:
             vistos[clave] = v.decl_line
 
-    # Variables que nunca reciben un valor. El predicado es is_driven: cubre el
+    # Variables que nunca reciben un valor. El predicado es is_written: cubre el
     # canal analógico, el contador de pulsos, la batería, el router, el reloj,
-    # VoltSE/VoltDiff y el destino de un MedianRun. Enumerar los casos a mano
-    # se desincroniza — con MedianRun pasó: el destino de un filtro quedaba
-    # anunciado como que "va a valer 0 siempre" cuando en realidad el equipo lo
-    # escribe antes de cada statement.
+    # VoltSE/VoltDiff, el destino de un MedianRun y la consigna de un
+    # SetpointSchedule. Enumerar los casos a mano se desincroniza — con
+    # MedianRun pasó: el destino de un filtro quedaba anunciado como que "va a
+    # valer 0 siempre" cuando en realidad el equipo lo escribe antes de cada
+    # statement.
     #
-    # OJO al reusar is_driven. Hoy contesta dos preguntas distintas que para
-    # sus miembros actuales dan lo mismo: «¿le escribe el equipo?», que es la
-    # de acá, y «¿preservarla es inútil?», que es la del firmware — y ahí un sí
-    # RECHAZA el nombre en PreserveVariables. Coinciden porque un canal o el
-    # reloj se recalculan en cada scan SIN CONDICIONES. Un escritor condicional
-    # las separa: le escribe el equipo, así que no está muerta, pero si en modo
-    # degradado no le escribe, preservarla es imprescindible. Cuando aparezca
-    # el primero hay que partir el predicado en dos, no volver a la lista a
-    # mano.
+    # NO usar preserve_pointless acá. Contesta otra pregunta —«¿preservarla es
+    # inútil?», la que decide si PreserveVariables rechaza el nombre— y para la
+    # consigna de una agenda las dos respuestas son opuestas: le escribe el
+    # equipo, así que no está muerta, pero preservarla es imprescindible porque
+    # con el reloj sin sincronizar el equipo no le escribe y su último valor
+    # tiene que sobrevivir un reinicio.
     for v in prog.vars:
-        if v.is_driven or v.assigned_lines:
+        if v.is_written or v.assigned_lines:
             continue
         if v.name.upper() in ("PUBLIC", "DIM", "UNITS"):
             continue  # ya avisado como declaración indentada

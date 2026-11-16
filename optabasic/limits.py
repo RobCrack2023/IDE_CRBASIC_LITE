@@ -7,7 +7,8 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: Versión del firmware contra la que está calcado este motor. También es
 #: la versión del IDE (`optabasic.__version__`): van juntas. La 1.9.1 y la 1.9.2 solo
 #: tocaron el USB y el manejo de archivos del equipo, no el parser ni sus límites.
-FIRMWARE_VERSION = "1.9.2"
+#: La 1.9.3 agrega SetpointSchedule y la agenda de consignas en archivo.
+FIRMWARE_VERSION = "1.9.3"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
@@ -20,7 +21,7 @@ MAX_VARS = 64              # CR_MAX_VARS
 MAX_CONSTS = 16            # CR_MAX_CONSTS
 MAX_TABLES = 4             # CR_MAX_TABLES
 MAX_FIELDS = 32            # CR_MAX_FIELDS
-MAX_STMTS = 64             # CR_MAX_STMTS — 32 hasta v1.6.11
+MAX_STMTS = 128            # CR_MAX_STMTS — 64 hasta v1.9.2, 32 hasta v1.6.11
 MAX_EXPR_TOKENS = 20       # CR_MAX_EXPR_TOKENS
 OPSTK_MAX = 20             # CR_OPSTK_MAX
 IF_MAX_DEPTH = 2           # CR_IF_MAX_DEPTH
@@ -28,6 +29,10 @@ MAX_PRESERVE = MAX_VARS    # CR_MAX_PRESERVE — nombres en PreserveVariables
 MAX_MEDIAN = 4             # CR_MAX_MEDIAN — filtros MedianRun simultaneos
 MEDIAN_MIN_WIN = 3         # CR_MEDIAN_MIN_WIN
 MEDIAN_MAX_WIN = 9         # CR_MEDIAN_MAX_WIN — impar
+MAX_SCHED = 4              # CR_MAX_SCHED — SetpointSchedule simultaneos
+MAX_CANAL = 4              # CR_MAX_CANAL — compuerta maxima en agenda.csv
+MAX_AGENDA = 200           # CR_MAX_AGENDA — entradas en la tabla del equipo
+AGENDA_BUF_BYTES = 8192    # AGENDA_BUF_BYTES — texto del archivo (usa 8191)
 
 # ── Longitudes de nombre (strncpy del firmware) ─────────────────────────
 MAX_VAR_NAME = 23
