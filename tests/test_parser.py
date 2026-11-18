@@ -864,3 +864,205 @@ def test_la_instruccion_esta_en_el_catalogo():
     assert ficha is not None
     assert len(ficha.parametros) == len(ficha.firma_partes()) == 4
     assert [p.opcional for p in ficha.parametros] == [False, False, True, True]
+
+
+# ── ModbusRTU (v1.10.0) ─────────────────────────────────────────────────
+def _mb(*lineas, vars_=None):
+    """Un .CR1 con los datos de una estacion y la lectura que se le pida."""
+    decl = vars_ or ["Public Res", "Public Viento, Dir, Temp, Hum, Pres", "Public Otra"]
+    cuerpo = decl + list(lineas) + [
+        "DataTable(R, True, 100)",
+        "    Sample(1, Viento, FP2)",
+        "EndTable",
+    ]
+    return chr(10).join(cuerpo) + chr(10)
+
+
+_LECTURA = "ModbusRTU(Res, Viento, 1, 3, 0, 5, 0, 10)"
+
+
+def test_modbusrtu_declara_la_lectura():
+    r = parse(_mb(_LECTURA))
+    assert r.program.modbus and len(r.program.modbus) == 1
+    m = r.program.modbus[0]
+    assert (m.result, m.first, m.slave, m.fn, m.start, m.count, m.type) == (
+        "Res", "Viento", 1, 3, 0, 5, 0)
+    assert m.interval_s == 10 and m.mult == 1.0 and m.offset == 0.0
+    assert not [d for d in r.diagnostics if d.code.startswith("modbus")]
+
+
+def test_modbusrtu_marca_resultado_y_las_n_variables_consecutivas():
+    r = parse(_mb(_LECTURA))
+    marcadas = [v.name for v in r.program.vars if v.is_modbus]
+    assert marcadas == ["Res", "Viento", "Dir", "Temp", "Hum", "Pres"]
+    assert not r.program.find_var("Otra").is_modbus
+    assert all(v.no_auto_pin for v in r.program.vars if v.is_modbus)
+
+
+def test_modbusrtu_las_variables_del_bus_no_se_preservan():
+    """preserve_pointless: el equipo las recalcula, preservarlas daria un dato viejo."""
+    r = parse(_mb(_LECTURA))
+    assert r.program.find_var("Viento").preserve_pointless
+    assert not r.program.find_var("Otra").preserve_pointless
+
+
+def test_modbusrtu_acepta_mult_y_offset():
+    r = parse(_mb("ModbusRTU(Res, Viento, 1, 3, 0, 5, 2, 10, 0.1, -5)"))
+    m = r.program.modbus[0]
+    assert (m.type, m.mult, m.offset) == (2, 0.1, -5.0)
+
+
+def test_modbusrtu_acepta_constantes_en_los_argumentos():
+    r = parse(_mb("Const Esc = 7", "Const Cuantos = 5",
+                  "ModbusRTU(Res, Viento, Esc, 3, 0, Cuantos, 0, 10)"))
+    assert r.program.modbus and r.program.modbus[0].slave == 7
+
+
+@pytest.mark.parametrize("linea,codigo", [
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 5, 0)", "modbus-argumentos"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 5, 0, 10, 1, 0, 9)", "modbus-argumentos"),
+    ("ModbusRTU(Nada, Viento, 1, 3, 0, 5, 0, 10)", "modbus-no-declarada"),
+    ("ModbusRTU(Res, Viento, Dir, 3, 0, 5, 0, 10)", "modbus-no-constante"),
+    ("ModbusRTU(Res, Viento, 0, 3, 0, 5, 0, 10)", "modbus-esclavo"),
+    ("ModbusRTU(Res, Viento, 248, 3, 0, 5, 0, 10)", "modbus-esclavo"),
+    ("ModbusRTU(Res, Viento, 1, 5, 0, 5, 0, 10)", "modbus-funcion"),
+    ("ModbusRTU(Res, Viento, 1, 3, 70000, 5, 0, 10)", "modbus-inicio"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 0, 0, 10)", "modbus-cantidad"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 33, 0, 10)", "modbus-cantidad"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 5, 8, 10)", "modbus-tipo"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 5, 0, 0)", "modbus-intervalo"),
+    ("ModbusRTU(Res, Viento, 1, 3, 0, 5, 0, 10, 0)", "modbus-mult"),
+    ("ModbusRTU(Res, Pres, 1, 3, 0, 3, 0, 10)", "modbus-sin-variables"),
+    ("ModbusRTU(Dir, Viento, 1, 3, 0, 5, 0, 10)", "modbus-resultado-dentro"),
+])
+def test_modbusrtu_rechaza_lo_que_el_firmware_rechaza(linea, codigo):
+    r = parse(_mb(linea))
+    assert codigo in codigos(r)
+    assert not r.program.modbus
+
+
+def test_modbusrtu_dos_lecturas_no_pueden_compartir_variables():
+    r = parse(_mb(_LECTURA, "ModbusRTU(Otra, Temp, 2, 3, 0, 2, 0, 10)"))
+    assert len(r.program.modbus) == 1
+    assert "modbus-variable-ocupada" in codigos(r)
+
+
+def test_modbusrtu_dos_lecturas_distintas_conviven():
+    r = parse(_mb("ModbusRTU(Res, Viento, 1, 3, 0, 3, 0, 10)",
+                  "ModbusRTU(Otra, Hum, 2, 4, 0, 2, 2, 30)"))
+    assert len(r.program.modbus) == 2
+
+
+def test_modbusrtu_maximo_de_lecturas():
+    vars_ = ["Public R1, R2, R3, R4, R5", "Public D1, D2, D3, D4, D5", "Public Viento"]
+    lineas = [f"ModbusRTU(R{i}, D{i}, {i}, 3, 0, 1, 2, 10)" for i in range(1, 6)]
+    r = parse(_mb(*lineas, vars_=vars_))
+    assert len(r.program.modbus) == L.MAX_MODBUS
+    assert "modbus-limite" in codigos(r)
+
+
+def test_modbusrtu_una_consigna_de_agenda_no_puede_ser_destino():
+    r = parse(_mb("PreserveVariables Viento",
+                  "SetpointSchedule(Viento, 1)",
+                  _LECTURA))
+    assert "modbus-variable-ocupada" in codigos(r)
+
+
+def test_setpointschedule_no_acepta_una_variable_del_bus():
+    r = parse(_mb(_LECTURA, "SetpointSchedule(Viento, 1)"))
+    assert "setpoint-consigna-ocupada" in codigos(r)
+
+
+def test_registros_por_valor():
+    r = parse(_mb("ModbusRTU(Res, Viento, 1, 3, 0, 3, 0, 10)",
+                  "ModbusRTU(Otra, Hum, 1, 3, 0, 2, 2, 10)"))
+    a, b = r.program.modbus
+    assert (a.registers_per_value, b.registers_per_value) == (2, 1)
+    r = parse(_mb("ModbusRTU(Res, Viento, 1, 1, 0, 5, 0, 10)"))
+    assert r.program.modbus[0].registers_per_value == 1   # bobinas: un bit por valor
+
+
+# -- directivas del bus
+@pytest.mark.parametrize("linea,codigo", [
+    ("ModbusBaud=1000", "modbus-baud"),
+    ("ModbusBaud=230400", "modbus-baud"),
+    ("ModbusFormato=7E1", "modbus-formato"),
+    ("ModbusTimeout=10", "modbus-timeout"),
+    ("ModbusTimeout=5000", "modbus-timeout"),
+])
+def test_directivas_modbus_fuera_de_rango(linea, codigo):
+    r = parse(_mb(linea))
+    assert codigo in codigos(r)
+
+
+def test_directivas_modbus_validas():
+    n = parse(_mb("ModbusBaud=19200", "ModbusFormato = 8e1", "ModbusTimeout=300")).program.network
+    assert (n.modbus_baud, n.modbus_format, n.modbus_timeout) == (19200, "8E1", 300)
+
+
+def test_directivas_modbus_sin_igual():
+    r = parse(_mb("ModbusBaud"))
+    assert "fw-directiva" in codigos(r)
+
+
+def test_sin_directivas_el_bus_queda_por_defecto():
+    n = parse(_mb(_LECTURA)).program.network
+    assert (n.modbus_baud, n.modbus_format, n.modbus_timeout) == (None, None, None)
+
+
+# -- lint
+def test_lint_avisa_del_bus_por_defecto():
+    assert "modbus-bus-por-defecto" in codigos(analyze(_mb(_LECTURA)))
+    assert "modbus-bus-por-defecto" not in codigos(analyze(_mb("ModbusBaud=9600", _LECTURA)))
+
+
+def test_lint_lista_las_variables_que_llena():
+    r = analyze(_mb(_LECTURA))
+    d = [d for d in r.diagnostics if d.code == "modbus-variables"]
+    assert d and "Viento, Dir, Temp, Hum, Pres" in d[0].message
+
+
+def test_lint_avisa_si_el_programa_asigna_una_variable_del_bus():
+    r = analyze(_mb(_LECTURA, "BeginProg", "    Scan(1, Sec, 0, 0)",
+                    "        Viento = 3", "        CallTable R", "    NextScan", "EndProg"))
+    assert "modbus-variable-asignada" in codigos(r)
+
+
+def test_lint_avisa_que_bloquea_los_reles():
+    r = analyze(_mb(_LECTURA, "BeginProg", "    Scan(1, Sec, 0, 0)",
+                    "        PortSet(1, 1)", "        CallTable R", "    NextScan", "EndProg"))
+    assert "modbus-bloquea-reles" in codigos(r)
+
+
+def test_lint_no_avisa_de_reles_si_no_los_hay():
+    r = analyze(_mb(_LECTURA, "BeginProg", "    Scan(10, Sec, 0, 0)",
+                    "        CallTable R", "    NextScan", "EndProg"))
+    assert "modbus-bloquea-reles" not in codigos(r)
+
+
+def test_lint_intervalo_menor_que_el_scan():
+    r = analyze(_mb("ModbusRTU(Res, Viento, 1, 3, 0, 5, 0, 5)",
+                    "BeginProg", "    Scan(30, Sec, 0, 0)",
+                    "        CallTable R", "    NextScan", "EndProg"))
+    assert "modbus-intervalo-menor-scan" in codigos(r)
+
+
+def test_lint_modbusmaster_de_campbell_remite_a_modbusrtu():
+    r = analyze(_mb("BeginProg", "    Scan(1, Sec, 0, 0)",
+                    "        ModbusMaster(Res, 1, 9600, 1, 3, Viento, 1, 5, 3, 100, 0)",
+                    "        CallTable R", "    NextScan", "EndProg"))
+    assert [d for d in r.diagnostics if "ModbusRTU" in d.message]
+
+
+def test_modbusrtu_esta_en_el_catalogo():
+    from optabasic.reference import buscar
+    ficha = buscar("ModbusRTU")
+    assert ficha is not None
+    assert len(ficha.parametros) == len(ficha.firma_partes()) == 10
+    assert [p.opcional for p in ficha.parametros][-2:] == [True, True]
+    for d in ("ModbusBaud", "ModbusFormato", "ModbusTimeout"):
+        assert buscar(d) is not None
+
+
+def test_la_version_del_motor_es_la_del_firmware():
+    assert L.FIRMWARE_VERSION == "1.10.0"

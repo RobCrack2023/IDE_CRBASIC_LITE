@@ -22,6 +22,7 @@ from .model import (
     CmpOp,
     Const,
     Median,
+    Modbus,
     Field,
     Program,
     Schedule,
@@ -157,12 +158,20 @@ class _Parser:
             self.do_directive_str(line, "RouterPass", L.MAX_ROUTER_CRED)
         elif cr_eq(kw, "UTCOFFSET") or kw.startswith("UTCOFFSET="):
             self.do_utcoffset(line)
+        elif cr_eq(kw, "MODBUSBAUD") or kw.startswith("MODBUSBAUD="):
+            self.do_modbus_directive(line, "ModbusBaud")
+        elif cr_eq(kw, "MODBUSFORMATO") or kw.startswith("MODBUSFORMATO="):
+            self.do_modbus_directive(line, "ModbusFormato")
+        elif cr_eq(kw, "MODBUSTIMEOUT") or kw.startswith("MODBUSTIMEOUT="):
+            self.do_modbus_directive(line, "ModbusTimeout")
         elif cr_eq(kw, "PUBLIC") or cr_eq(kw, "DIM"):
             self.do_public(line, kw)
         elif cr_eq(kw, "MEDIANRUN"):
             self.do_medianrun(pl)
         elif cr_eq(kw, "SETPOINTSCHEDULE"):
             self.do_setpointschedule(pl)
+        elif cr_eq(kw, "MODBUSRTU"):
+            self.do_modbusrtu(pl)
         elif cr_eq(kw, "PRESERVEVARIABLES"):
             self.do_preservevariables(line)
         elif cr_eq(kw, "UNITS"):
@@ -418,6 +427,144 @@ class _Parser:
                      n_var=nv.name if nv is not None else "",
                      serie_var=sv.name if sv is not None else "",
                      line=self.line.file_no))
+
+    def do_modbus_directive(self, line: str, which: str) -> None:
+        """ModbusBaud= / ModbusFormato= / ModbusTimeout= -> parametros del bus
+        RS-485 de ModbusRTU (v1.10.0). Declarativas, como ServerPort=."""
+        eq = line.find("=")
+        if eq < 0:
+            self.issue(f"{which} sin '='", code="fw-directiva")
+            return
+        net = self.prog.network
+        n = self.line.file_no
+        if which == "ModbusFormato":
+            rest = line[eq + 1:].lstrip()
+            tok = ""
+            for ch in rest:
+                if ch.isspace() or len(tok) >= 7:
+                    break
+                tok += ch.upper()
+            if tok in L.MODBUS_FORMATS:
+                net.modbus_format, net.modbus_format_line = tok, n
+            else:
+                self.issue("ModbusFormato: use 8N1, 8E1, 8O1 u 8N2",
+                           code="modbus-formato")
+            return
+        v = c_atoi(line[eq + 1:])
+        if which == "ModbusBaud":
+            if L.MODBUS_BAUD_MIN <= v <= L.MODBUS_BAUD_MAX:
+                net.modbus_baud, net.modbus_baud_line = v, n
+            else:
+                self.issue("ModbusBaud fuera de rango %d-%d"
+                           % (L.MODBUS_BAUD_MIN, L.MODBUS_BAUD_MAX),
+                           code="modbus-baud")
+        else:
+            if L.MODBUS_TIMEOUT_MIN <= v <= L.MODBUS_TIMEOUT_MAX:
+                net.modbus_timeout, net.modbus_timeout_line = v, n
+            else:
+                self.issue("ModbusTimeout fuera de rango %d-%d ms"
+                           % (L.MODBUS_TIMEOUT_MIN, L.MODBUS_TIMEOUT_MAX),
+                           code="modbus-timeout")
+
+    def do_modbusrtu(self, pl: ParsedLine) -> None:
+        """ModbusRTU(Resultado, Primera_Var, Esclavo, Funcion, Inicio, Cantidad,
+        Tipo, Intervalo_seg [, Mult [, Offset]]) -> lectura de un sensor RS-485
+        (v1.10.0). Mismo orden de validaciones que el firmware.
+
+        Declarativa, como MedianRun: la ejecuta el equipo en cada scan, una
+        transaccion como maximo. Llena Primera_Var y las Cantidad-1 variables
+        declaradas a continuacion.
+        """
+        args = pl.args
+        if len(args) < 8 or len(args) > 10:
+            self.issue("ModbusRTU: 8 a 10 argumentos (Resultado, Primera_Var, "
+                       "Esclavo, Funcion, Inicio, Cantidad, Tipo, Intervalo_seg "
+                       "[, Mult [, Offset]])", code="modbus-argumentos")
+            return
+        if len(self.prog.modbus) >= L.MAX_MODBUS:
+            self.issue("ModbusRTU: max %d lecturas" % L.MAX_MODBUS,
+                       code="modbus-limite")
+            return
+        rv = self.prog.find_var(args[0])
+        fv = self.prog.find_var(args[1])
+        if rv is None or fv is None:
+            self.issue("ModbusRTU: Resultado o Primera_Var no declaradas",
+                       code="modbus-no-declarada")
+            return
+
+        nums: "list[float]" = []
+        ok = True
+        for tok in args[2:]:
+            idx, val = self.resolve_operand(tok)
+            if idx != -1:           # una variable, o algo que no se resuelve
+                ok = False
+                break
+            nums.append(val)
+        if not ok:
+            self.issue("ModbusRTU: Esclavo..Offset tienen que ser numeros o "
+                       "Const, no variables", code="modbus-no-constante")
+            return
+        slave, fn, start, count, typ, interval = nums[:6]
+        mult = nums[6] if len(nums) >= 7 else 1.0
+        offset = nums[7] if len(nums) >= 8 else 0.0
+
+        def entero(x: float) -> bool:
+            return x == float(int(x))
+
+        if not entero(slave) or slave < 1 or slave > 247:
+            self.issue("ModbusRTU: Esclavo de 1 a 247", code="modbus-esclavo")
+            return
+        if not entero(fn) or fn < 1 or fn > 4:
+            self.issue("ModbusRTU: Funcion 1, 2, 3 o 4 (solo lectura)",
+                       code="modbus-funcion")
+            return
+        if not entero(start) or start < 0 or start > 65535:
+            self.issue("ModbusRTU: Inicio de 0 a 65535", code="modbus-inicio")
+            return
+        if not entero(count) or count < 1 or count > L.MODBUS_MAX_COUNT:
+            self.issue("ModbusRTU: Cantidad de 1 a %d" % L.MODBUS_MAX_COUNT,
+                       code="modbus-cantidad")
+            return
+        if not entero(typ) or typ < 0 or typ > 7:
+            self.issue("ModbusRTU: Tipo de 0 a 7", code="modbus-tipo")
+            return
+        if interval < 1.0 or interval > 86400.0:
+            self.issue("ModbusRTU: Intervalo_seg de 1 a 86400",
+                       code="modbus-intervalo")
+            return
+        if mult == 0.0:
+            self.issue("ModbusRTU: Mult no puede ser 0", code="modbus-mult")
+            return
+
+        fi = self.prog.var_index(args[1])
+        ri = self.prog.var_index(args[0])
+        n = int(count)
+        if fi + n > len(self.prog.vars):
+            self.issue("ModbusRTU: no hay tantas variables declaradas a "
+                       "partir de Primera_Var", code="modbus-sin-variables")
+            return
+        if fi <= ri < fi + n:
+            self.issue("ModbusRTU: Resultado esta dentro de las variables de "
+                       "datos", code="modbus-resultado-dentro")
+            return
+        # Si ya la escribe otra cosa (un borne, otra lectura Modbus, la
+        # agenda...), las dos se pisarian en cada scan.
+        for v in [rv] + self.prog.vars[fi:fi + n]:
+            if v.preserve_pointless or v.is_scheduled:
+                self.issue("ModbusRTU: una de las variables ya la maneja otra "
+                           "instruccion", code="modbus-variable-ocupada")
+                return
+
+        rv.is_modbus = True
+        rv.no_auto_pin = True
+        for v in self.prog.vars[fi:fi + n]:
+            v.is_modbus = True
+            v.no_auto_pin = True
+        self.prog.modbus.append(
+            Modbus(result=rv.name, first=fv.name, first_idx=fi,
+                   slave=int(slave), fn=int(fn), start=int(start), count=n,
+                   type=int(typ), interval_s=interval, mult=mult, offset=offset,
+                   line=self.line.file_no))
 
     def do_preservevariables(self, line: str) -> None:
         """PreserveVariables [Var1, Var2, ...] -> valores que sobreviven un

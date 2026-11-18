@@ -32,6 +32,7 @@ _CON_ARGUMENTOS = {
 #: Instrucciones de CRBasic real que el Opta no implementa (manual §17).
 _FUERA_DE_ALCANCE = {
     "SDI12RECORDER": "SDI-12 no está implementado",
+    "MODBUSMASTER": "no existe con la firma de Campbell: para leer un sensor Modbus RTU usar ModbusRTU(...)",
     "SERIALOPEN": "el puerto serie no está implementado",
     "SERIALIN": "el puerto serie no está implementado",
     "SERIALOUT": "el puerto serie no está implementado",
@@ -73,7 +74,87 @@ def lint(result: ParseResult) -> ParseResult:
     _preserve(result)
     _mediana(result)
     _agenda(result)
+    _modbus(result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  ModbusRTU (v1.10.0)
+# ─────────────────────────────────────────────────────────────────────────
+def _modbus(result: ParseResult) -> None:
+    prog, diags = result.program, result.diagnostics
+    if not prog.modbus:
+        return
+
+    net = prog.network
+    if net.modbus_baud is None and net.modbus_format is None:
+        diags.info(
+            prog.modbus[0].line,
+            f"El programa lee un sensor RS-485 pero no declara ModbusBaud= ni "
+            f"ModbusFormato=: el equipo usa {L.MODBUS_DEFAULT_BAUD} baudios, "
+            f"{L.MODBUS_DEFAULT_FORMAT}. Si el sensor usa otra cosa, no "
+            "contesta y la lectura queda en NAN con Resultado 1.",
+            code="modbus-bus-por-defecto",
+        )
+
+    # Una lectura que no recibe respuesta BLOQUEA el ciclo hasta el timeout. Con
+    # relés accionados desde este mismo programa, el lazo de control se frena ese
+    # tiempo en cada intento fallido (tras el primero se espacian, hasta 30 s).
+    timeout = net.modbus_timeout or L.MODBUS_DEFAULT_TIMEOUT
+    maneja_reles = any(prog.relay_map())
+    if maneja_reles:
+        diags.info(
+            prog.modbus[0].line,
+            f"Este programa acciona relés y además lee un sensor por RS-485. Si "
+            f"el sensor no contesta, cada intento detiene el ciclo hasta "
+            f"{timeout} ms (el equipo los espacia tras el primer fallo, hasta "
+            f"{L.MODBUS_BACKOFF_MAX_S} s). Para una compuerta conviene un "
+            "Opta aparte para el sensor.",
+            code="modbus-bloquea-reles",
+        )
+
+    for m in prog.modbus:
+        vars_datos = prog.vars[m.first_idx:m.first_idx + m.count]
+        nombres = ", ".join(v.name for v in vars_datos)
+        diags.info(
+            m.line,
+            f"ModbusRTU llena {m.count} variable{'s' if m.count != 1 else ''} "
+            f"a partir de «{m.first}»: {nombres}. Son las declaradas una tras "
+            f"otra; si intercalas otra Public entre ellas, los valores se "
+            f"corren. Resultado en «{m.result}» (0 = bien).",
+            code="modbus-variables",
+        )
+
+        if m.fn <= 2 and m.type != 2:
+            diags.info(
+                m.line,
+                f"Con la función {m.fn} cada valor es un bit (0 o 1): el Tipo "
+                f"{m.type} se ignora.",
+                code="modbus-tipo-ignorado",
+            )
+
+        # Lo que el programa asigne a estas variables lo pisa la lectura en el
+        # scan que toca, y entre lecturas lo pisa la propia asignacion.
+        for v in [prog.find_var(m.result)] + vars_datos:
+            if v is not None and v.assigned_lines:
+                diags.warning(
+                    v.assigned_lines[0],
+                    f"«{v.name}» la llena una lectura Modbus (línea {m.line}) y "
+                    "además el programa le asigna un valor: la asignación "
+                    "corre en cada scan y tapa lo leído del sensor.",
+                    code="modbus-variable-asignada",
+                )
+                break
+
+        # Intervalo menor que el scan: se lee en cada scan, no mas seguido.
+        if m.interval_s * 1000 < prog.scan_interval_ms:
+            diags.info(
+                m.line,
+                f"El intervalo ({m.interval_s:g} s) es menor que el scan "
+                f"({prog.scan_seconds:g} s): se lee una vez por scan, no más "
+                "seguido.",
+                code="modbus-intervalo-menor-scan",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────

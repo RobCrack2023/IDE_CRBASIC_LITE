@@ -64,6 +64,9 @@ class Var:
     is_scheduled: bool = False
     #: Agenda_N / Agenda_Serie de un SetpointSchedule: de solo lectura.
     is_sched_info: bool = False
+    #: La llena una lectura Modbus RTU (v1.10.0, ModbusRTU): el valor, o el
+    #: Resultado de la lectura.
+    is_modbus: bool = False
 
     @property
     def preserve_pointless(self) -> bool:
@@ -82,7 +85,7 @@ class Var:
         """
         return (self.pin >= 0 or self.is_batt_v or bool(self.modem_field)
                 or bool(self.clock_field) or self.is_pulse_count or self.is_median
-                or self.has_volt_instr or self.is_sched_info)
+                or self.has_volt_instr or self.is_sched_info or self.is_modbus)
 
     @property
     def is_written(self) -> bool:
@@ -163,6 +166,31 @@ class Schedule:
     n_var: str = ""        # Agenda_N, opcional
     serie_var: str = ""    # Agenda_Serie, opcional
     line: int = 0
+
+
+@dataclass
+class Modbus:
+    """CRModbus: una lectura Modbus RTU declarada con ModbusRTU (v1.10.0)."""
+
+    result: str            # variable con el codigo de resultado
+    first: str             # Primera_Var: primera variable de datos
+    first_idx: int         # su indice en Program.vars (las demas son las siguientes)
+    slave: int
+    fn: int                # 1, 2, 3 o 4
+    start: int
+    count: int             # valores (variables), no registros
+    type: int              # 0..7
+    interval_s: float
+    mult: float = 1.0
+    offset: float = 0.0
+    line: int = 0
+
+    @property
+    def registers_per_value(self) -> int:
+        """Registros que ocupa cada valor: los tipos de 32 bits usan dos."""
+        if self.fn <= 2:
+            return 1
+        return 2 if (self.type <= 1 or self.type >= 4) else 1
 
 
 @dataclass
@@ -252,6 +280,15 @@ class Network:
     #: (v1.7.8). No afecta la hora de los registros, siempre en UTC.
     utc_offset: "float | None" = None
     utc_offset_line: int = 0
+    #: Parametros del bus RS-485 para ModbusRTU (v1.10.0). Valen para todas las
+    #: lecturas del programa; el firmware repone 9600, 8N1 y 250 ms en cada
+    #: parseo, y estos campos quedan en None si el programa no los declara.
+    modbus_baud: "int | None" = None
+    modbus_baud_line: int = 0
+    modbus_format: "str | None" = None
+    modbus_format_line: int = 0
+    modbus_timeout: "int | None" = None
+    modbus_timeout_line: int = 0
 
     @property
     def provisioned(self) -> bool:
@@ -282,6 +319,8 @@ class Program:
     medians: "list[Median]" = field(default_factory=list)
     #: SetpointSchedule declarados, en orden (v1.9.3).
     schedules: "list[Schedule]" = field(default_factory=list)
+    #: ModbusRTU declarados, en orden (v1.10.0).
+    modbus: "list[Modbus]" = field(default_factory=list)
 
     @property
     def preserve_enabled(self) -> bool:

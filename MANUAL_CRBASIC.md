@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.9.3**
+> **Versión de referencia.** Calcado del firmware **v1.10.0**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -145,6 +145,9 @@ firmware sirve para varios equipos):
 | `PakBusAddress=N` (1-4094) | Dirección PakBus de este logger (debe coincidir con el `node_id` configurado en el servidor). |
 | `RouterUser=usuario` | Usuario admin del router Teltonika de **este** equipo, para las instrucciones `Modem*` (§20). Máx. 31 caracteres. Sin esta línea el firmware usa `admin`. Desde v1.6.18. |
 | `RouterPass=clave` | Clave de ese usuario. Máx. 31 caracteres. **El firmware arranca con la clave vacía**: sin esta línea el login falla y las variables `Modem*` se quedan en 0. Desde v1.6.18. |
+| `ModbusBaud=N` (1200-115200) | Velocidad del bus RS-485 de `ModbusRTU` (§25). Por defecto 9600. Desde v1.10.0. |
+| `ModbusFormato=F` | Formato serie del bus RS-485: `8N1`, `8E1`, `8O1` u `8N2`. Por defecto `8N1`. Desde v1.10.0. |
+| `ModbusTimeout=N` (50-2000) | Milisegundos que se espera la respuesta de un sensor Modbus. Por defecto 250. Desde v1.10.0. |
 | `UTCOffset=N` (-14 a 14) | Horas respecto de UTC para la hora **local** que devuelven `ClockYYMMDD`/`ClockHHMM` (§21). Admite decimales: `-3`, `5.5`. **No cambia la hora de los registros**, que siempre se archivan en UTC. Desde v1.7.8. |
 
 Se aceptan con o sin espacio antes del `=` (`ServerPort=6787` o
@@ -742,6 +745,8 @@ EndTable
 | Filtros `MedianRun` simultáneos | 4 | `CR_MAX_MEDIAN` |
 | Ventana de `MedianRun` | 3 a 9, impar | `CR_MEDIAN_MAX_WIN` |
 | `SetpointSchedule` simultáneos (uno por compuerta) | 4 | `CR_MAX_SCHED` |
+| `ModbusRTU` simultáneos | 4 | `CR_MAX_MODBUS` |
+| Valores por lectura `ModbusRTU` | 32 | `CR_MODBUS_MAX_COUNT` |
 | Entradas de la agenda `agenda.csv` | 200 en total | `CR_MAX_AGENDA` |
 | Tamaño del `agenda.csv` | 8191 bytes | `AGENDA_BUF_BYTES` |
 | Canales analógicos A0-A7 (medición + pulso + excitación) | 8 en total | — |
@@ -756,7 +761,9 @@ EndTable
 ## 17. Fuera de alcance (no implementado)
 
 - **SDI-12** (`SDI12Recorder`, etc.).
-- **Puerto serie/COM** (`SerialOpen`, `SerialIn`, `SerialOut`, RS-232/RS-485).
+- **Puerto serie/COM** (`SerialOpen`, `SerialIn`, `SerialOut`, RS-232/RS-485
+  genérico). Un sensor RS-485 **Modbus RTU** sí se lee, con `ModbusRTU` (§25);
+  `ModbusMaster` de Campbell no existe con esa firma.
 - Funciones matemáticas más allá de `Abs`/`Int`/`Sqr` (sin `Sin`, `Cos`,
   `Ln`, `Exp`, `Mod`, `ATN`, etc.).
 - Arreglos indexados en expresiones o declaraciones (`Temp(1)`, `rTime(4)`).
@@ -1154,3 +1161,145 @@ SetpointSchedule(Consigna2_cm, 2, Agenda_N2)
 
 Cada canal guarda por separado cuál fue su última entrada aplicada, así que el
 cambio de una compuerta no afecta a la otra.
+
+
+---
+
+## 25. Sensores RS-485 Modbus RTU — `ModbusRTU` (extensión propia, desde v1.10.0)
+
+```
+ModbusBaud=9600
+ModbusFormato=8N1
+ModbusTimeout=250
+ModbusRTU(Resultado, Primera_Var, Esclavo, Funcion, Inicio, Cantidad, Tipo, Intervalo_seg [, Mult [, Offset]])
+```
+
+El Opta hace de **maestro Modbus RTU** por su puerto RS-485 y deja lo que lee
+en variables del programa. Es **solo lectura**: no escribe en el sensor.
+
+```
+ModbusBaud=9600
+ModbusFormato=8N1
+Public Res_Met
+Public Viento, Direccion, Temp_aire, Humedad, Presion
+Units Viento = m/s
+Units Temp_aire = C
+
+ModbusRTU(Res_Met, Viento, 1, 3, 0, 5, 0, 10)
+```
+
+Lee cinco valores `float32` desde el registro 0 del esclavo 1 (función 3,
+registros de retención) cada 10 s, y los deja en `Viento`, `Direccion`,
+`Temp_aire`, `Humedad` y `Presion`, en ese orden.
+
+**Parámetros del bus** (directivas de configuración, como `ServerPort=`: no
+gastan instrucciones y valen para todas las lecturas del programa):
+
+| Directiva | Rango | Por defecto |
+|---|---|---|
+| `ModbusBaud=N` | 1200 a 115200 | 9600 |
+| `ModbusFormato=F` | `8N1`, `8E1`, `8O1`, `8N2` | `8N1` |
+| `ModbusTimeout=N` (ms) | 50 a 2000 | 250 |
+
+Hay **un solo puerto**: todos los sensores del mismo cable tienen que hablar a
+la misma velocidad y con el mismo formato. Un valor fuera de rango se registra
+en el log y se usa el de por defecto.
+
+**Argumentos de `ModbusRTU`.** `Esclavo` a `Offset` tienen que ser **números
+literales o `Const`**, nunca variables: una variable movería la lectura de
+sitio en pleno scan.
+
+| Argumento | Qué es |
+|---|---|
+| `Resultado` | Variable donde queda el código de la lectura (ver abajo). |
+| `Primera_Var` | Primera variable de datos. Las siguientes **declaradas a continuación** reciben los demás valores. |
+| `Esclavo` | Dirección Modbus del sensor, 1 a 247. |
+| `Funcion` | 1 bobinas, 2 entradas discretas, 3 registros de retención, 4 registros de entrada. |
+| `Inicio` | Primer registro (o bit), 0 a 65535, tal como lo dice la tabla del sensor. |
+| `Cantidad` | Cuántos **valores** leer, 1 a 32. Un `float32` ocupa dos registros pero es un solo valor. |
+| `Tipo` | Cómo se interpretan los registros, 0 a 7 (tabla de abajo). |
+| `Intervalo_seg` | Cada cuántos segundos leer, 1 a 86400. |
+| `Mult`, `Offset` | Opcionales. Cada valor sale como `leído × Mult + Offset`. Por defecto 1 y 0. `Mult` no puede ser 0. |
+
+| `Tipo` | Valor | Registros | Orden |
+|---|---|---|---|
+| 0 | `float32` | 2 | AB CD |
+| 1 | `float32` | 2 | CD AB |
+| 2 | `uint16` | 1 | — |
+| 3 | `int16` | 1 | — |
+| 4 | `uint32` | 2 | AB CD |
+| 5 | `uint32` | 2 | CD AB |
+| 6 | `int32` | 2 | AB CD |
+| 7 | `int32` | 2 | CD AB |
+
+Con las funciones 1 y 2 cada valor es **un bit** (0 o 1) y el `Tipo` se ignora.
+«AB CD» es la palabra alta primero (lo habitual); «CD AB» la palabra baja
+primero. Con el orden equivocado un `float` sale como un número enorme o `NAN`.
+
+**Código de `Resultado`.**
+
+| Valor | Significa |
+|---|---|
+| 0 | Lectura correcta. |
+| 1 | El esclavo no contestó, o contestó un error Modbus. |
+| 2 | La respuesta vino incompleta. |
+| 3 | El puerto RS-485 no abrió. |
+
+**Si la lectura falla, las variables de datos quedan en `NAN`**, nunca en el
+último valor: un dato viejo parecería actual y se archivaría como si lo fuera.
+
+> **Las variables no son un arreglo, son vecinas.** No hay arreglos en este
+> CRBasic (§17): la lectura llena `Primera_Var` y las `Cantidad - 1` variables
+> que están declaradas justo después. Si intercalas otra `Public` entre ellas, o
+> las declaras en otro orden, cada valor termina en la variable equivocada y
+> nada avisa. El IDE lista en un aviso exactamente cuáles va a llenar.
+
+**Cuánto tarda y qué bloquea.** Cada transacción **detiene el ciclo** del
+equipo mientras espera la respuesta, hasta `ModbusTimeout` ms si el sensor no
+contesta. Para que eso no cueste un timeout en cada scan:
+
+- se hace **una sola lectura por scan** como máximo, por turnos si hay varias;
+- cada una se repite a su propio `Intervalo_seg`, no en cada scan;
+- tras un fallo se **espacia**: el doble de espera cada vez, hasta 30 s (o el
+  intervalo, si es mayor). Al primer éxito vuelve al ritmo normal.
+
+Un Opta que además **acciona relés** (una compuerta) se frena ese tiempo cada
+vez que el sensor no contesta. Para una compuerta conviene que el sensor RS-485
+vaya en **otro Opta**; el IDE lo avisa cuando el programa tiene ambas cosas.
+
+**Reglas.**
+
+- Hasta **4** lecturas `ModbusRTU` por programa.
+- Una variable no puede estar en dos lecturas, ni en una lectura y en otra
+  instrucción (`SetpointSchedule`, `MedianRun`, un canal analógico...): se
+  pisarían en cada scan.
+- `Resultado` no puede ser una de las variables de datos.
+- Las variables de una lectura **no se preservan** (`PreserveVariables`): el
+  equipo las recalcula y preservarlas daría un valor viejo al arrancar.
+- Una lectura **no gasta instrucciones** de las 128 (§16): es declarativa, como
+  `MedianRun`. Gasta variables: una por valor más una por `Resultado`.
+- Una asignación del programa a una variable de la lectura corre en cada scan
+  y tapa lo leído; el linter lo avisa.
+
+**Averiguar con qué formato contesta un sensor desconocido.** Por USB:
+
+```
+MODBUS SCAN <esclavo> <inicio> <registros> [<baud>]
+```
+
+Prueba `8N1`, `8E1`, `8N2` y `8O1` con las funciones 3 y 4, y devuelve los
+primeros registros **crudos** de cada combinación que responde:
+
+```
+#D,MODBUS,OK,8N1,3,20,41B0 0000 42C8 0000 ...
+#D,MODBUS,NO,8E1,3
+#D,MODBUS,END
+```
+
+Con eso se decide `ModbusFormato`, `Funcion` y `Tipo`. Bloquea el equipo unos
+2 s: no usarlo con una compuerta en movimiento.
+
+**Lo que no hace.** No escribe en el sensor (funciones 5, 6 y 16), no habla
+Modbus ASCII ni Modbus TCP, y no mezcla tipos de dato en una misma lectura: un
+sensor con un `float` en el registro 0 y un entero en el registro 10 son dos
+`ModbusRTU`.

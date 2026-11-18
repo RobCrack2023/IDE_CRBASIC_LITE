@@ -215,6 +215,47 @@ CATALOGO: "list[Instr]" = [
         ),
     ),
     Instr(
+        nombre="ModbusBaud",
+        firma="ModbusBaud=baudios",
+        resumen="Velocidad del bus RS-485 para ModbusRTU",
+        categoria="Configuración del equipo",
+        detalle=(
+            "La velocidad del puerto RS-485, entre 1200 y 115200. Vale para "
+            "todas las lecturas ModbusRTU del programa: hay un solo puerto, así "
+            "que todos los sensores del cable tienen que hablar a la misma "
+            "velocidad. Sin esta línea, 9600."
+        ),
+        ejemplo="ModbusBaud=9600",
+    ),
+    Instr(
+        nombre="ModbusFormato",
+        firma="ModbusFormato=8N1",
+        resumen="Formato serie del bus RS-485 para ModbusRTU",
+        categoria="Configuración del equipo",
+        detalle=(
+            "Bits de datos, paridad y bits de parada: 8N1, 8E1, 8O1 u 8N2. "
+            "Vale para todas las lecturas ModbusRTU. Sin esta línea, 8N1."
+        ),
+        ejemplo="ModbusFormato=8E1",
+        trampa=(
+            "Un sensor con la paridad equivocada no contesta, y desde el "
+            "programa se ve igual que un sensor desconectado. El comando USB "
+            "MODBUS SCAN prueba los cuatro formatos y dice con cuál responde."
+        ),
+    ),
+    Instr(
+        nombre="ModbusTimeout",
+        firma="ModbusTimeout=milisegundos",
+        resumen="Cuánto espera el equipo la respuesta de un sensor",
+        categoria="Configuración del equipo",
+        detalle=(
+            "Tiempo máximo que se espera la respuesta Modbus, de 50 a 2000 ms. "
+            "Sin esta línea, 250. Mientras espera, el equipo no hace nada más: "
+            "no subas este valor más de lo que el sensor necesita."
+        ),
+        ejemplo="ModbusTimeout=300",
+    ),
+    Instr(
         nombre="PakBusAddress",
         firma="PakBusAddress=numero",
         resumen="Número de identificación del equipo en la red",
@@ -307,6 +348,61 @@ CATALOGO: "list[Instr]" = [
     ),
 
     # ── Entradas ─────────────────────────────────────────────────────
+    Instr(
+        nombre="ModbusRTU",
+        firma=("ModbusRTU(Resultado, Primera_Var, Esclavo, Funcion, Inicio, "
+               "Cantidad, Tipo, Intervalo_seg, Mult, Offset)"),
+        resumen="Lee un sensor por RS-485 (Modbus RTU, solo lectura)",
+        categoria="Entradas",
+        detalle=(
+            "Hace de maestro Modbus RTU por el puerto RS-485 del Opta y deja "
+            "lo que lee en variables. El puerto se configura con ModbusBaud=, "
+            "ModbusFormato= y ModbusTimeout=; la instrucción dice QUÉ leer.\n\n"
+            "No hay arreglos: la lectura llena Primera_Var y las Cantidad-1 "
+            "variables declaradas a continuación. Cantidad cuenta valores, no "
+            "registros: un float de 32 bits ocupa dos registros pero es un solo "
+            "valor.\n\n"
+            "Tipo: 0 float32 AB CD, 1 float32 CD AB, 2 uint16, 3 int16, "
+            "4 uint32 AB CD, 5 uint32 CD AB, 6 int32 AB CD, 7 int32 CD AB. "
+            "Con las funciones 1 y 2 (bobinas y entradas discretas) cada valor "
+            "es un bit y el Tipo se ignora.\n\n"
+            "Resultado vale 0 si la lectura salió bien, 1 si el esclavo no "
+            "contestó o contestó un error, 2 si la respuesta vino incompleta y "
+            "3 si el puerto no abrió. Si falla, las variables quedan en NAN, "
+            "no en el último valor: un dato viejo parecería actual.\n\n"
+            "El equipo hace una sola lectura por scan y cada una a su "
+            "Intervalo_seg. Tras un fallo espacia los intentos (el doble cada "
+            "vez, hasta 30 s) para que un sensor ausente no cueste un timeout "
+            "en cada ciclo. Hasta 4 lecturas por programa. Desde v1.10.0."
+        ),
+        parametros=[
+            Param("Resultado", "Variable donde queda el código de la lectura (0 = bien)."),
+            Param("Primera_Var", "La primera variable de datos. Las siguientes, declaradas una tras otra, reciben los demás valores."),
+            Param("Esclavo", "Dirección Modbus del sensor, de 1 a 247. Literal o Const."),
+            Param("Funcion", "1 bobinas, 2 entradas discretas, 3 registros de retención, 4 registros de entrada."),
+            Param("Inicio", "Primer registro (o bit), de 0 a 65535, como lo dice la tabla del sensor."),
+            Param("Cantidad", "Cuántos valores leer, de 1 a 32."),
+            Param("Tipo", "Cómo se interpretan los registros, de 0 a 7 (ver arriba)."),
+            Param("Intervalo_seg", "Cada cuántos segundos leer, de 1 a 86400."),
+            Param("Mult", "Se multiplica cada valor leído. Por defecto 1.", opcional=True),
+            Param("Offset", "Se suma después de multiplicar. Por defecto 0.", opcional=True),
+        ],
+        ejemplo=(
+            "ModbusBaud=9600\n"
+            "ModbusFormato=8N1\n"
+            "Public Res_Met\n"
+            "Public Viento, Direccion, Temp_aire, Humedad, Presion\n"
+            "ModbusRTU(Res_Met, Viento, 1, 3, 0, 5, 0, 10)"
+        ),
+        trampa=(
+            "Los valores caen en las variables que están declaradas "
+            "inmediatamente después de Primera_Var. Si intercalas otra Public "
+            "entre ellas, o las declaras en otro orden, cada valor termina en "
+            "la variable equivocada y nada avisa. Revisa también que Funcion, "
+            "Tipo y el orden de palabras sean los del sensor: con el orden "
+            "equivocado un float sale como un número enorme o NAN."
+        ),
+    ),
     Instr(
         nombre="MedianRun",
         firma="MedianRun(Destino, Fuente, Ventana)",

@@ -8,7 +8,9 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: la versión del IDE (`optabasic.__version__`): van juntas. La 1.9.1 y la 1.9.2 solo
 #: tocaron el USB y el manejo de archivos del equipo, no el parser ni sus límites.
 #: La 1.9.3 agrega SetpointSchedule y la agenda de consignas en archivo.
-FIRMWARE_VERSION = "1.9.3"
+#: La 1.10.0 agrega ModbusRTU (lectura de sensores RS-485) y el comando USB
+#: MODBUS SCAN.
+FIRMWARE_VERSION = "1.10.0"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
@@ -33,6 +35,15 @@ MAX_SCHED = 4              # CR_MAX_SCHED — SetpointSchedule simultaneos
 MAX_CANAL = 4              # CR_MAX_CANAL — compuerta maxima en agenda.csv
 MAX_AGENDA = 200           # CR_MAX_AGENDA — entradas en la tabla del equipo
 AGENDA_BUF_BYTES = 8192    # AGENDA_BUF_BYTES — texto del archivo (usa 8191)
+MAX_MODBUS = 4             # CR_MAX_MODBUS — ModbusRTU simultaneos
+MODBUS_MAX_COUNT = 32      # CR_MODBUS_MAX_COUNT — valores por lectura
+MODBUS_BACKOFF_MAX_S = 30  # CR_MODBUS_MAX_BACKOFF_MS — espera maxima tras fallos
+MODBUS_BAUD_MIN, MODBUS_BAUD_MAX = 1200, 115200
+MODBUS_TIMEOUT_MIN, MODBUS_TIMEOUT_MAX = 50, 2000   # ms
+MODBUS_DEFAULT_BAUD = 9600
+MODBUS_DEFAULT_FORMAT = "8N1"
+MODBUS_DEFAULT_TIMEOUT = 250
+MODBUS_FORMATS = ("8N1", "8E1", "8O1", "8N2")
 
 # ── Longitudes de nombre (strncpy del firmware) ─────────────────────────
 MAX_VAR_NAME = 23
