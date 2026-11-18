@@ -1065,4 +1065,4 @@ def test_modbusrtu_esta_en_el_catalogo():
 
 
 def test_la_version_del_motor_es_la_del_firmware():
-    assert L.FIRMWARE_VERSION == "1.10.0"
+    assert L.FIRMWARE_VERSION == "1.10.1"

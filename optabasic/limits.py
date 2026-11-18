@@ -10,7 +10,9 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: La 1.9.3 agrega SetpointSchedule y la agenda de consignas en archivo.
 #: La 1.10.0 agrega ModbusRTU (lectura de sensores RS-485) y el comando USB
 #: MODBUS SCAN.
-FIRMWARE_VERSION = "1.10.0"
+#: La 1.10.1 apaga los cuatro relés al (re)cargar un programa; no cambia el
+#: parser ni sus límites.
+FIRMWARE_VERSION = "1.10.1"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11

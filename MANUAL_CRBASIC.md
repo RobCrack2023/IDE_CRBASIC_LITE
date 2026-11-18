@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.10.0**
+> **Versión de referencia.** Calcado del firmware **v1.10.1**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -349,6 +349,14 @@ Es una instrucción ejecutable como cualquier otra: corre en el punto del
 programa donde está escrita, respeta los bloques `If`, y **el relé cambia solo
 ahí**. Si el programa no vuelve a ejecutar esa línea, el relé se queda como
 está.
+
+> **Cargar un programa apaga los cuatro relés** (desde v1.10.1). Un relé solo
+> lo mueve un `PortSet`, así que el que dejó encendido el programa anterior
+> seguiría así, sin nadie que lo corte y sin el tiempo máximo de movimiento que
+> tenía ese programa. Cada vez que se carga o recarga un programa (por
+> FileDownload, `RunNow`, USB o al arrancar) el equipo pone los relés en
+> reposo, y el programa nuevo parte de ahí. Reemplazar un programa con una
+> compuerta en movimiento la **detiene**.
 
 El patrón habitual es decidir con la lógica y aplicar al final del `Scan`, de
 modo que en cada ciclo primero se decide todo y después se acciona:
