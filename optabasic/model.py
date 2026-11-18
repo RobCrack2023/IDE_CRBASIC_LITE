@@ -67,6 +67,8 @@ class Var:
     #: La llena una lectura Modbus RTU (v1.10.0, ModbusRTU): el valor, o el
     #: Resultado de la lectura.
     is_modbus: bool = False
+    #: La calcula una curva de aforo (v1.11.0, RatingCurve).
+    is_rating: bool = False
 
     @property
     def preserve_pointless(self) -> bool:
@@ -85,7 +87,8 @@ class Var:
         """
         return (self.pin >= 0 or self.is_batt_v or bool(self.modem_field)
                 or bool(self.clock_field) or self.is_pulse_count or self.is_median
-                or self.has_volt_instr or self.is_sched_info or self.is_modbus)
+                or self.has_volt_instr or self.is_sched_info or self.is_modbus
+                or self.is_rating)
 
     @property
     def is_written(self) -> bool:
@@ -165,6 +168,18 @@ class Schedule:
     canal: int
     n_var: str = ""        # Agenda_N, opcional
     serie_var: str = ""    # Agenda_Serie, opcional
+    modo_var: str = ""     # Modo, opcional (v1.11.0): 0 = cm, 1 = m3/s
+    line: int = 0
+
+
+@dataclass
+class Rating:
+    """CRRating: una curva de aforo declarada con RatingCurve (v1.11.0)."""
+
+    dest: str              # caudal
+    src: str               # nivel
+    a: float
+    b: float
     line: int = 0
 
 
@@ -321,6 +336,8 @@ class Program:
     schedules: "list[Schedule]" = field(default_factory=list)
     #: ModbusRTU declarados, en orden (v1.10.0).
     modbus: "list[Modbus]" = field(default_factory=list)
+    #: RatingCurve declaradas, en orden (v1.11.0).
+    ratings: "list[Rating]" = field(default_factory=list)
 
     @property
     def preserve_enabled(self) -> bool:

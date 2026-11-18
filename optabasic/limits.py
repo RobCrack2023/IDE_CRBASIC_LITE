@@ -13,7 +13,10 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: La 1.10.1 apaga los cuatro relés al (re)cargar un programa; no cambia el
 #: parser ni sus límites.
 #: La 1.10.2 enciende el LED del frente de cada relé junto con el relé.
-FIRMWARE_VERSION = "1.10.2"
+#: La 1.11.0 agrega RatingCurve (curva de aforo caudal = a * nivel^b) y la
+#: unidad de cada entrada de la agenda (cm o m3/s) con un cuarto argumento
+#: Modo en SetpointSchedule.
+FIRMWARE_VERSION = "1.11.0"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
@@ -35,6 +38,9 @@ MAX_MEDIAN = 4             # CR_MAX_MEDIAN — filtros MedianRun simultaneos
 MEDIAN_MIN_WIN = 3         # CR_MEDIAN_MIN_WIN
 MEDIAN_MAX_WIN = 9         # CR_MEDIAN_MAX_WIN — impar
 MAX_SCHED = 4              # CR_MAX_SCHED — SetpointSchedule simultaneos
+MAX_RATING = 4             # CR_MAX_RATING — RatingCurve simultaneas
+RATING_A_MAX = 1.0e6       # a de la curva: mayor que 0 y hasta este valor
+RATING_B_MIN, RATING_B_MAX = 0.1, 5.0   # exponente de la curva
 MAX_CANAL = 4              # CR_MAX_CANAL — compuerta maxima en agenda.csv
 MAX_AGENDA = 200           # CR_MAX_AGENDA — entradas en la tabla del equipo
 AGENDA_BUF_BYTES = 8192    # AGENDA_BUF_BYTES — texto del archivo (usa 8191)

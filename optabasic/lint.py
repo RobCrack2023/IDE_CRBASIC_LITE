@@ -73,6 +73,7 @@ def lint(result: ParseResult) -> ParseResult:
     _red(result)
     _preserve(result)
     _mediana(result)
+    _rating(result)
     _agenda(result)
     _modbus(result)
     return result
@@ -158,6 +159,49 @@ def _modbus(result: ParseResult) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+#  RatingCurve (v1.11.0)
+# ─────────────────────────────────────────────────────────────────────────
+def _rating(result: ParseResult) -> None:
+    prog, diags = result.program, result.diagnostics
+
+    for r in prog.ratings:
+        dst = prog.find_var(r.dest)
+        src = prog.find_var(r.src)
+
+        # La curva escribe el caudal en cada scan, ANTES de los statements:
+        # una asignacion del programa lo pisa y la curva no sirve de nada.
+        if dst is not None and dst.assigned_lines:
+            diags.error(
+                dst.assigned_lines[0],
+                f"«{dst.name}» lo calcula la curva de aforo (RatingCurve, linea "
+                f"{r.line}), pero el programa tambien le asigna un valor. La "
+                "curva corre antes que las asignaciones, asi que la asignacion "
+                "la pisa. Usa otra variable para el calculo.",
+                code="rating-destino-asignado",
+            )
+
+        # Mismo criterio que MedianRun: un nivel que nadie escribe da caudal
+        # constante, casi siempre por argumentos al reves.
+        if src is not None and not src.is_written and not src.assigned_lines:
+            diags.warning(
+                r.line,
+                f"«{r.src}» no lee ninguna entrada ni recibe asignaciones, asi "
+                "que la curva va a dar siempre el mismo caudal. ¿Estan dados "
+                "vuelta los argumentos? Van RatingCurve(Caudal, Nivel, a, b).",
+                code="rating-nivel-sin-lectura",
+            )
+
+        diags.info(
+            r.line,
+            f"«{r.dest}» = {r.a:g} × «{r.src}»^{r.b:g}. El nivel tiene que "
+            "estar en la unidad con que se ajusto la curva (centimetros si "
+            "la tabla de aforo es regla en cm) y el caudal sale en la "
+            "unidad de la tabla (m3/s).",
+            code="rating-formula",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────
 #  SetpointSchedule (v1.9.3)
 # ─────────────────────────────────────────────────────────────────────────
 def _agenda(result: ParseResult) -> None:
@@ -201,6 +245,31 @@ def _agenda(result: ParseResult) -> None:
 
         # Agenda_N y Agenda_Serie las escribe el equipo en cada scan: lo que
         # el programa les asigne se pierde.
+        # Modo: lo escribe el equipo junto con la consigna. Si la consigna se
+        # preserva y el modo no, tras un reinicio sin reloj la consigna queda
+        # en m3/s pero el modo vuelve a 0 (cm): se leeria un caudal como nivel.
+        if sc.modo_var:
+            mv = prog.find_var(sc.modo_var)
+            if mv is not None and not (mv.preserve or prog.preserve_all):
+                diags.warning(
+                    sc.line,
+                    f"«{mv.name}» (el modo de «{dst.name}») no esta en "
+                    "PreserveVariables. Si el equipo reinicia sin reloj "
+                    "sincronizado, la consigna se recupera pero el modo vuelve a "
+                    "0 (cm) y un caudal se leeria como centimetros. Agrega "
+                    f"«{mv.name}» a PreserveVariables.",
+                    code="agenda-modo-sin-preserve",
+                )
+            if mv is not None and mv.assigned_lines:
+                diags.warning(
+                    mv.assigned_lines[0],
+                    f"«{mv.name}» lo mueve la agenda junto con la consigna "
+                    f"(SetpointSchedule, linea {sc.line}) y ademas el programa le "
+                    "asigna un valor: si la asignacion corre en cada scan, el modo "
+                    "no coincide con la unidad de la consigna.",
+                    code="agenda-modo-asignado",
+                )
+
         for nombre in (sc.n_var, sc.serie_var):
             v = prog.find_var(nombre) if nombre else None
             if v is not None and v.assigned_lines:

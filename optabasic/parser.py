@@ -25,6 +25,7 @@ from .model import (
     Modbus,
     Field,
     Program,
+    Rating,
     Schedule,
     Stmt,
     StmtType,
@@ -170,6 +171,8 @@ class _Parser:
             self.do_medianrun(pl)
         elif cr_eq(kw, "SETPOINTSCHEDULE"):
             self.do_setpointschedule(pl)
+        elif cr_eq(kw, "RATINGCURVE"):
+            self.do_ratingcurve(pl)
         elif cr_eq(kw, "MODBUSRTU"):
             self.do_modbusrtu(pl)
         elif cr_eq(kw, "PRESERVEVARIABLES"):
@@ -358,8 +361,59 @@ class _Parser:
             Median(dest=dst.name, src=src.name, window=w,
                    line=self.line.file_no))
 
+    def do_ratingcurve(self, pl: ParsedLine) -> None:
+        """RatingCurve(Caudal, Nivel, a, b) -> Caudal = a * Nivel^b (v1.11.0).
+
+        Declarativa, como MedianRun: la calcula el equipo en cada scan,
+        despues de los filtros. Mismo orden de validaciones que el firmware.
+        """
+        args = pl.args
+        if len(args) != 4:
+            self.issue("RatingCurve: 4 argumentos (Caudal, Nivel, a, b)",
+                       code="rating-argumentos")
+            return
+        if len(self.prog.ratings) >= L.MAX_RATING:
+            self.issue("RatingCurve: max %d curvas" % L.MAX_RATING,
+                       code="rating-limite")
+            return
+        dst = self.prog.find_var(args[0])
+        src = self.prog.find_var(args[1])
+        if dst is None or src is None:
+            self.issue("RatingCurve: Caudal o Nivel no declaradas",
+                       code="rating-no-declarada")
+            return
+        if cr_eq(dst.name, src.name):
+            self.issue("RatingCurve: Caudal y Nivel son la misma variable",
+                       code="rating-misma-variable")
+            return
+        ia, a = self.resolve_operand(args[2])
+        ib, b = self.resolve_operand(args[3])
+        if ia != -1 or ib != -1:   # una variable cambiaria la curva en pleno scan
+            self.issue("RatingCurve: a y b tienen que ser numeros o Const, "
+                       "no variables", code="rating-no-constante")
+            return
+        if not (0.0 < a <= L.RATING_A_MAX):
+            self.issue("RatingCurve: a tiene que ser mayor que 0 y no pasar de "
+                       "%d" % int(L.RATING_A_MAX), code="rating-a")
+            return
+        if not (L.RATING_B_MIN <= b <= L.RATING_B_MAX):
+            self.issue("RatingCurve: b de %g a %g" % (L.RATING_B_MIN, L.RATING_B_MAX),
+                       code="rating-b")
+            return
+        if dst.preserve_pointless or dst.is_scheduled:
+            # Si ya la escribe otra cosa, las dos se pisarian en cada scan.
+            self.issue("RatingCurve: Caudal ya lo maneja otra instruccion",
+                       code="rating-destino-ocupado")
+            return
+
+        dst.is_rating = True
+        dst.no_auto_pin = True   # la calcula la curva, no un borne
+        self.prog.ratings.append(
+            Rating(dest=dst.name, src=src.name, a=a, b=b,
+                   line=self.line.file_no))
+
     def do_setpointschedule(self, pl: ParsedLine) -> None:
-        """SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie]])
+        """SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie [, Modo]]])
         -> liga la consigna a un canal de la agenda en archivo (v1.9.3).
 
         Es declarativa, como PreserveVariables: el trabajo lo hace el equipo
@@ -371,6 +425,11 @@ class _Parser:
             self.issue("SetpointSchedule: faltan argumentos (Consigna, Canal)",
                        code="setpoint-argumentos")
             return
+        if len(args) > 5:
+            self.issue("SetpointSchedule: sobran argumentos (Consigna, Canal "
+                       "[, Agenda_N [, Agenda_Serie [, Modo]]])",
+                       code="setpoint-argumentos")
+            return
         if len(self.prog.schedules) >= L.MAX_SCHED:
             self.issue("SetpointSchedule: max %d instrucciones" % L.MAX_SCHED,
                        code="setpoint-limite")
@@ -378,6 +437,7 @@ class _Parser:
         dst = self.prog.find_var(args[0])
         nv = self.prog.find_var(args[2]) if len(args) >= 3 else None
         sv = self.prog.find_var(args[3]) if len(args) >= 4 else None
+        mv = self.prog.find_var(args[4]) if len(args) >= 5 else None
         if dst is None:
             self.issue("SetpointSchedule: consigna no declarada",
                        code="setpoint-no-declarada")
@@ -389,8 +449,9 @@ class _Parser:
             self.issue("SetpointSchedule: el canal es una constante entera de 1 a %d"
                        % L.MAX_CANAL, code="setpoint-canal")
             return
-        if (len(args) >= 3 and nv is None) or (len(args) >= 4 and sv is None):
-            self.issue("SetpointSchedule: Agenda_N / Agenda_Serie no declaradas",
+        if (len(args) >= 3 and nv is None) or (len(args) >= 4 and sv is None) \
+           or (len(args) >= 5 and mv is None):
+            self.issue("SetpointSchedule: Agenda_N / Agenda_Serie / Modo no declaradas",
                        code="setpoint-info-no-declarada")
             return
         if dst.is_scheduled:
@@ -404,9 +465,15 @@ class _Parser:
             return
         if (nv is not None and cr_eq(nv.name, dst.name)) or \
            (sv is not None and cr_eq(sv.name, dst.name)) or \
-           (nv is not None and sv is not None and cr_eq(nv.name, sv.name)):
+           (nv is not None and sv is not None and cr_eq(nv.name, sv.name)) or \
+           (mv is not None and any(o is not None and cr_eq(mv.name, o.name)
+                                   for o in (dst, nv, sv))):
             self.issue("SetpointSchedule: las variables tienen que ser distintas",
                        code="setpoint-variables-repetidas")
+            return
+        if mv is not None and (mv.preserve_pointless or mv.is_scheduled):
+            self.issue("SetpointSchedule: Modo ya lo maneja otra instruccion",
+                       code="setpoint-modo-ocupado")
             return
         canal = int(cf)
         if any(s.canal == canal for s in self.prog.schedules):
@@ -422,10 +489,17 @@ class _Parser:
         if sv is not None:
             sv.is_sched_info = True
             sv.no_auto_pin = True
+        if mv is not None:
+            # Se mueve junto con la consigna y, como ella, tiene que
+            # sobrevivir un reinicio: preservar una sin la otra dejaria un
+            # caudal leido como centimetros.
+            mv.is_scheduled = True
+            mv.no_auto_pin = True
         self.prog.schedules.append(
             Schedule(dest=dst.name, canal=canal,
                      n_var=nv.name if nv is not None else "",
                      serie_var=sv.name if sv is not None else "",
+                     modo_var=mv.name if mv is not None else "",
                      line=self.line.file_no))
 
     def do_modbus_directive(self, line: str, which: str) -> None:

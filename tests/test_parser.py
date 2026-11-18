@@ -862,8 +862,8 @@ def test_la_instruccion_esta_en_el_catalogo():
     from optabasic.reference import buscar
     ficha = buscar("SetpointSchedule")
     assert ficha is not None
-    assert len(ficha.parametros) == len(ficha.firma_partes()) == 4
-    assert [p.opcional for p in ficha.parametros] == [False, False, True, True]
+    assert len(ficha.parametros) == len(ficha.firma_partes()) == 5
+    assert [p.opcional for p in ficha.parametros] == [False, False, True, True, True]
 
 
 # ── ModbusRTU (v1.10.0) ─────────────────────────────────────────────────
@@ -1065,4 +1065,183 @@ def test_modbusrtu_esta_en_el_catalogo():
 
 
 def test_la_version_del_motor_es_la_del_firmware():
-    assert L.FIRMWARE_VERSION == "1.10.2"
+    assert L.FIRMWARE_VERSION == "1.11.0"
+
+
+# ── RatingCurve y Modo de SetpointSchedule (v1.11.0) ────────────────────
+def _rc(*lineas):
+    """Un .CR1 con un nivel, un caudal y la agenda de una compuerta."""
+    cuerpo = ["Public Nivel_cm, Caudal, Consigna, Modo_C, Agenda_N, Agenda_Serie, Otra"] + list(lineas) + [
+        "DataTable(R, True, 100)",
+        "    Sample(1, Caudal, FP2)",
+        "EndTable",
+    ]
+    return chr(10).join(cuerpo) + chr(10)
+
+
+def test_ratingcurve_declara_la_curva():
+    r = parse(_rc("AIChannel(Nivel_cm, 1)",
+                  "RatingCurve(Caudal, Nivel_cm, 0.015, 1.4991)"))
+    assert len(r.program.ratings) == 1
+    c = r.program.ratings[0]
+    assert (c.dest, c.src, c.a, c.b) == ("Caudal", "Nivel_cm", 0.015, 1.4991)
+    q = r.program.find_var("Caudal")
+    assert q.is_rating and q.no_auto_pin
+    assert q.pin == -1                      # no consume un canal analogico
+
+
+def test_ratingcurve_acepta_const_en_a_y_b():
+    r = parse(_rc("Const Coef = 0.015", "Const Expo = 1.4991",
+                  "RatingCurve(Caudal, Nivel_cm, Coef, Expo)"))
+    c = r.program.ratings[0]
+    assert (c.a, c.b) == (0.015, 1.4991)
+
+
+def test_ratingcurve_rechaza_a_y_b_variables():
+    r = parse(_rc("RatingCurve(Caudal, Nivel_cm, Otra, 1.5)"))
+    assert r.program.ratings == []
+    assert "rating-no-constante" in codigos(r)
+
+
+def test_ratingcurve_rechaza_coeficientes_fuera_de_rango():
+    for a, b, cod in (("0", "1.5", "rating-a"), ("-1", "1.5", "rating-a"),
+                      ("2000000", "1.5", "rating-a"), ("0.015", "0.05", "rating-b"),
+                      ("0.015", "6", "rating-b")):
+        r = parse(_rc("RatingCurve(Caudal, Nivel_cm, %s, %s)" % (a, b)))
+        assert r.program.ratings == [], (a, b)
+        assert cod in codigos(r), (a, b)
+
+
+def test_ratingcurve_argumentos_y_variables():
+    r = parse(_rc("RatingCurve(Caudal, Nivel_cm, 0.015)"))
+    assert "rating-argumentos" in codigos(r)
+    r = parse(_rc("RatingCurve(Fantasma, Nivel_cm, 0.015, 1.5)"))
+    assert "rating-no-declarada" in codigos(r)
+    r = parse(_rc("RatingCurve(Caudal, Caudal, 0.015, 1.5)"))
+    assert "rating-misma-variable" in codigos(r)
+
+
+def test_ratingcurve_topea_en_cuatro_curvas():
+    lineas = ["Public n, q1, q2, q3, q4, q5"]
+    lineas += ["RatingCurve(%s, n, 0.015, 1.5)" % v for v in ("q1", "q2", "q3", "q4", "q5")]
+    r = parse(chr(10).join(lineas) + chr(10))
+    assert len(r.program.ratings) == 4
+    assert "rating-limite" in codigos(r)
+
+
+def test_ratingcurve_rechaza_un_caudal_que_ya_maneja_otra_cosa():
+    r = parse(_rc("MedianRun(Caudal, Otra, 5)",
+                  "RatingCurve(Caudal, Nivel_cm, 0.015, 1.5)"))
+    assert r.program.ratings == []
+    assert "rating-destino-ocupado" in codigos(r)
+
+
+def test_ratingcurve_el_caudal_asignado_por_el_programa_es_error():
+    r = analyze(_rc("AIChannel(Nivel_cm, 1)",
+                    "RatingCurve(Caudal, Nivel_cm, 0.015, 1.5)",
+                    "BeginProg",
+                    "    Scan(1, Sec, 0, 0)",
+                    "        Caudal = Nivel_cm * 2",
+                    "        CallTable R",
+                    "    NextScan",
+                    "EndProg"))
+    assert "rating-destino-asignado" in codigos(r)
+
+
+def test_ratingcurve_nivel_sin_lectura_avisa_y_el_caudal_no_es_variable_muerta():
+    r = analyze(_rc("RatingCurve(Caudal, Otra, 0.015, 1.5)"))
+    assert "rating-nivel-sin-lectura" in codigos(r)
+    r = analyze(_rc("AIChannel(Nivel_cm, 1)",
+                    "RatingCurve(Caudal, Nivel_cm, 0.015, 1.5)"))
+    assert "rating-nivel-sin-lectura" not in codigos(r)
+    muertas = [d for d in r.diagnostics if d.code == "variable-muerta"]
+    assert all("Caudal" not in d.message for d in muertas)
+
+
+def test_ratingcurve_preservevariables_rechaza_el_caudal():
+    r = parse(_rc("AIChannel(Nivel_cm, 1)",
+                  "RatingCurve(Caudal, Nivel_cm, 0.015, 1.5)",
+                  "PreserveVariables Caudal"))
+    assert "preserve-inutil" in codigos(r) or any(
+        "Caudal" in d.message for d in r.diagnostics)
+
+
+def test_setpointschedule_con_modo():
+    r = parse(_rc("SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C)"))
+    s = r.program.schedules[0]
+    assert s.modo_var == "Modo_C"
+    m = r.program.find_var("Modo_C")
+    assert m.is_scheduled and m.no_auto_pin
+    assert not m.preserve_pointless     # se preserva igual que la consigna
+
+
+def test_setpointschedule_modo_no_declarado_o_repetido():
+    r = parse(_rc("SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Fantasma)"))
+    assert r.program.schedules == []
+    assert "setpoint-info-no-declarada" in codigos(r)
+    r = parse(_rc("SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Consigna)"))
+    assert r.program.schedules == []
+    assert "setpoint-variables-repetidas" in codigos(r)
+    r = parse(_rc("SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Agenda_N)"))
+    assert r.program.schedules == []
+    assert "setpoint-variables-repetidas" in codigos(r)
+
+
+def test_setpointschedule_modo_ya_manejado_por_otra_instruccion():
+    r = parse(_rc("MedianRun(Modo_C, Otra, 5)",
+                  "SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C)"))
+    assert r.program.schedules == []
+    assert "setpoint-modo-ocupado" in codigos(r)
+
+
+def test_setpointschedule_con_seis_argumentos_se_rechaza():
+    r = parse(_rc("SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C, Otra)"))
+    assert r.program.schedules == []
+    assert "setpoint-argumentos" in codigos(r)
+
+
+def test_modo_sin_preservevariables_avisa():
+    sin = analyze(_rc("PreserveVariables Consigna",
+                      "SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C)"))
+    assert "agenda-modo-sin-preserve" in codigos(sin)
+    con = analyze(_rc("PreserveVariables Consigna, Modo_C",
+                      "SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C)"))
+    assert "agenda-modo-sin-preserve" not in codigos(con)
+
+
+def test_el_modo_asignado_por_el_programa_avisa():
+    r = analyze(_rc("PreserveVariables Consigna, Modo_C",
+                    "SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_C)",
+                    "BeginProg",
+                    "    Scan(1, Sec, 0, 0)",
+                    "        Modo_C = 1",
+                    "        CallTable R",
+                    "    NextScan",
+                    "EndProg"))
+    assert "agenda-modo-asignado" in codigos(r)
+
+
+def test_ratingcurve_esta_en_el_catalogo():
+    from optabasic.reference import buscar
+    ficha = buscar("RatingCurve")
+    assert ficha is not None
+    assert len(ficha.parametros) == len(ficha.firma_partes()) == 4
+    assert [p.opcional for p in ficha.parametros] == [False, False, False, False]
+
+
+def test_el_programa_de_ejemplo_en_caudal_no_tiene_errores():
+    """programa_banco_caudal.CR1 (repo del firmware) es el ejemplo que se le da
+    a quien programa en caudal: tiene que cargar limpio con el motor del IDE."""
+    from optabasic.diagnostics import Severity
+    ruta = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "proyecto_arduino", "OptaPakBus", "programa_banco_caudal.CR1")
+    if not os.path.exists(ruta):
+        pytest.skip("el repo del firmware no esta junto al del IDE")
+    with open(ruta, encoding="ascii", newline="") as f:
+        r = analyze(f.read())
+    errores = [d for d in r.diagnostics if d.severity == Severity.ERROR]
+    assert errores == [], [d.message for d in errores]
+    assert len(r.program.ratings) == 1
+    sc = r.program.schedules[0]
+    assert sc.modo_var == "Modo_Consigna"
+    assert len(r.program.consts) <= L.MAX_CONSTS

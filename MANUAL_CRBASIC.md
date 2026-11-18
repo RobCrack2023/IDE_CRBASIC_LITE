@@ -7,7 +7,7 @@ dentro de [OptaPakBus.ino](OptaPakBus.ino). No es un intérprete CRBasic
 completo: es un parser línea-por-línea, escrito a mano, pensado para
 programas cortos de monitoreo/control con sensores 4-20mA y voltaje.
 
-> **Versión de referencia.** Calcado del firmware **v1.10.2**
+> **Versión de referencia.** Calcado del firmware **v1.11.0**
 > (`OptaPakBus.ino`, repo `OptaPakBus`): los límites de la §16 y la lista de
 > palabras que reconoce `parse_crbasic()` salen de ahí, y las mismas reglas
 > están implementadas en el motor de este IDE (`optabasic/limits.py`,
@@ -758,6 +758,7 @@ EndTable
 | Filtros `MedianRun` simultáneos | 4 | `CR_MAX_MEDIAN` |
 | Ventana de `MedianRun` | 3 a 9, impar | `CR_MEDIAN_MAX_WIN` |
 | `SetpointSchedule` simultáneos (uno por compuerta) | 4 | `CR_MAX_SCHED` |
+| `RatingCurve` simultáneas | 4 | `CR_MAX_RATING` |
 | `ModbusRTU` simultáneos | 4 | `CR_MAX_MODBUS` |
 | Valores por lectura `ModbusRTU` | 32 | `CR_MODBUS_MAX_COUNT` |
 | Entradas de la agenda `agenda.csv` | 200 en total | `CR_MAX_AGENDA` |
@@ -778,7 +779,8 @@ EndTable
   genérico). Un sensor RS-485 **Modbus RTU** sí se lee, con `ModbusRTU` (§25);
   `ModbusMaster` de Campbell no existe con esa firma.
 - Funciones matemáticas más allá de `Abs`/`Int`/`Sqr` (sin `Sin`, `Cos`,
-  `Ln`, `Exp`, `Mod`, `ATN`, etc.).
+  `Ln`, `Exp`, `Mod`, `ATN`, etc.). **Tampoco hay potencia (`^`)**: la curva de
+  aforo `Q = a·h^b` de un río se calcula con `RatingCurve` (§26).
 - Arreglos indexados en expresiones o declaraciones (`Temp(1)`, `rTime(4)`).
 - Funciones de tiempo (`IfTime`, `TimeIsBetween`, `Status.*`, etc.).
 - Cadenas de texto y operaciones sobre `String` (el tipo se acepta como
@@ -1086,7 +1088,7 @@ molesta; conviene ajustarlo en ensayo mirando el crudo y el filtrado juntos.
 ## 24. Agenda de consignas — `SetpointSchedule` (extensión propia, desde v1.9.3)
 
 ```
-SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie]])
+SetpointSchedule(Consigna, Canal [, Agenda_N [, Agenda_Serie [, Modo]]])
 ```
 
 Cambia una consigna según una **agenda de fecha y hora** guardada en el equipo.
@@ -1115,9 +1117,13 @@ Formato del archivo, una entrada por línea, con **decimal en punto**:
 261103,1430,1,52.5
 ```
 
-- La primera línea es obligatoria: `#AGENDA <formato>,<serie>`. El formato es 2.
-  La **serie** la sube el servidor en cada cambio del calendario.
-- Cada entrada es `AAMMDD,HHMM,canal,cm`. El **canal** es la compuerta (1 a 4).
+- La primera línea es obligatoria: `#AGENDA <formato>,<serie>`. El formato es 2
+  (todo en cm) o 3 (cada entrada con su unidad, desde v1.11.0). La **serie**
+  la sube el servidor en cada cambio del calendario.
+- Cada entrada del formato 2 es `AAMMDD,HHMM,canal,cm`. El **canal** es la
+  compuerta (1 a 4). En el formato 3 lleva una columna más,
+  `AAMMDD,HHMM,canal,valor,unidad`, con unidad `0` = cm de nivel y `1` = m³/s
+  de caudal (ver «Programar en caudal», más abajo).
 - Las líneas que empiezan con `#` y las vacías se ignoran. No hace falta que
   vengan ordenadas.
 - **Una línea mala rechaza el archivo entero** y el equipo conserva la agenda
@@ -1152,6 +1158,7 @@ el operador tocó desde el HMI volvería atrás en menos de un scan.
 | `Canal` | La compuerta, **entero de 1 a 4, literal o `Const`**. Una variable no sirve: cambiaría de compuerta en pleno scan. Dos instrucciones no pueden compartirlo. |
 | `Agenda_N` | Opcional, de solo lectura: cuántas entradas tiene cargadas **este canal**. |
 | `Agenda_Serie` | Opcional, de solo lectura: la serie de la agenda cargada. El HMI la usa para ver si el equipo tiene la vigente sin leerle el archivo. |
+| `Modo` | Opcional (v1.11.0): la variable donde el equipo deja la unidad de la consigna vigente, `0` = cm y `1` = m³/s. Se escribe **en el mismo instante** que la consigna. Sin ella, toda entrada se toma como cm. |
 
 > **La consigna sí se preserva, a diferencia de una medición.** Con el reloj
 > sin sincronizar el equipo no le escribe, y su último valor tiene que
@@ -1174,6 +1181,38 @@ SetpointSchedule(Consigna2_cm, 2, Agenda_N2)
 
 Cada canal guarda por separado cuál fue su última entrada aplicada, así que el
 cambio de una compuerta no afecta a la otra.
+
+### Programar en caudal (m³/s) — desde v1.11.0
+
+Cada entrada del calendario puede ser un **nivel en cm** o un **caudal en
+m³/s**, a elección de quien programa. El servidor manda el valor con su unidad
+(formato 3) y el equipo deja en `Modo` un `0` o un `1`. **La conversión no la
+hace el servidor: la hace el programa del equipo**, que mide el nivel, calcula
+el caudal con la curva de aforo (`RatingCurve`, §26) y compara según el modo.
+
+```
+Public Nivel_cm, Caudal_m3s, Consigna, Modo_Consigna, Error
+Public Agenda_N, Agenda_Serie
+PreserveVariables Consigna, Modo_Consigna
+RatingCurve(Caudal_m3s, Nivel_cm, 0.015, 1.4991)
+SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_Consigna)
+
+    If (Modo_Consigna = 1) Then Error = Caudal_m3s - Consigna
+    If (Modo_Consigna = 0) Then Error = Nivel_cm - Consigna
+```
+
+Con `Modo` en 1 la consigna son m³/s y el lazo compara contra `Caudal_m3s`; con
+`Modo` en 0 son cm y compara contra `Nivel_cm`. Un calendario puede mezclar las
+dos unidades. Hay que tener presente:
+
+- **`Modo` se preserva igual que la consigna.** Si solo se preserva la consigna,
+  tras un reinicio sin reloj sincronizado la consigna se recupera en m³/s pero el
+  modo vuelve a 0 y un caudal se leería como centímetros. El linter lo avisa.
+- **La banda muerta tiene unidad.** Una tolerancia de 1,5 cm no sirve para un
+  caudal: en cada modo el lazo necesita su propia banda (en m³/s, del orden de
+  la variación de caudal que produce 1,5 cm en la curva).
+- **El ajuste manual del HMI no cambia el modo.** Si el operador escribe a mano
+  la consigna mientras `Modo` vale 1, el número se interpreta como m³/s.
 
 
 ---
@@ -1316,3 +1355,52 @@ Con eso se decide `ModbusFormato`, `Funcion` y `Tipo`. Bloquea el equipo unos
 Modbus ASCII ni Modbus TCP, y no mezcla tipos de dato en una misma lectura: un
 sensor con un `float` en el registro 0 y un entero en el registro 10 son dos
 `ModbusRTU`.
+
+
+---
+
+## 26. Curva de aforo — `RatingCurve` (extensión propia, desde v1.11.0)
+
+```
+RatingCurve(Caudal, Nivel, a, b)
+```
+
+Calcula en cada scan `Caudal = a · Nivel^b`: la forma que ajusta una planilla
+sobre la tabla de aforo de un río. El CRBasic del Opta **no tiene potencia**
+(solo `Abs`, `Int` y `Sqr`), así que un exponente como 1,4991 no se puede
+escribir con asignaciones; por eso existe esta instrucción.
+
+```
+Public Nivel_cm, Caudal_m3s
+Units Nivel_cm = cm
+Units Caudal_m3s = m3/s
+RatingCurve(Caudal_m3s, Nivel_cm, 0.015, 1.4991)
+```
+
+Con la tabla de aforo de ejemplo (regla en cm, caudal en m³/s), 30 cm dan
+2,457 m³/s y 60 cm dan 6,946 m³/s.
+
+| Argumento | Qué es |
+|---|---|
+| `Caudal` | La variable donde queda el caudal. No puede ser la misma que `Nivel` ni recibir una asignación del programa: la curva corre antes y la asignación la pisaría. |
+| `Nivel` | El nivel del río, en **la unidad con que se ajustó la curva** (cm si la regla de la tabla de aforo está en cm). |
+| `a` | Coeficiente, mayor que 0 y hasta 1000000. **Número o `Const`, no una variable.** |
+| `b` | Exponente, de 0,1 a 5. **Número o `Const`, no una variable.** |
+
+**Cuándo corre.** Una vez por scan, después de las lecturas y de `MedianRun` y
+**antes** de las asignaciones: el programa compara con el caudal de ese mismo
+scan, calculado sobre el nivel ya filtrado. No gasta instrucciones (§16).
+
+- **Nivel menor o igual a 0 da caudal 0.** La potencia de un negativo no existe
+  y un aforo bajo cero no tiene sentido.
+- **Un nivel `NAN` da `NAN`.** El caudal no puede ser más confiable que el nivel
+  del que sale.
+- **No se preserva.** Se recalcula en cada scan, así que `PreserveVariables` no
+  lo acepta (igual que un sensor o una mediana).
+- **Vale dentro del rango de la tabla de aforo.** Más allá del último punto
+  medido es una extrapolación.
+- **`a` y `b` son los de la curva ajustada.** Si la planilla redondeó el
+  coeficiente (0,015 en vez de 0,01497), el caudal hereda ese error.
+
+Junto con `SetpointSchedule` y su argumento `Modo` (§24) permite programar el
+calendario en m³/s.

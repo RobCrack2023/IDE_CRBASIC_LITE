@@ -461,7 +461,7 @@ CATALOGO: "list[Instr]" = [
     ),
     Instr(
         nombre="SetpointSchedule",
-        firma="SetpointSchedule(Consigna, Canal, Agenda_N, Agenda_Serie)",
+        firma="SetpointSchedule(Consigna, Canal, Agenda_N, Agenda_Serie, Modo)",
         resumen="Cambia la consigna segun una agenda de fecha y hora",
         categoria="Entradas",
         detalle=(
@@ -477,16 +477,21 @@ CATALOGO: "list[Instr]" = [
             "Sigue la agenda por si mismo durante un corte de enlace: no "
             "necesita al servidor para cambiar de nivel. Si el reloj no esta "
             "sincronizado no toca nada y la consigna queda en el ultimo valor.\n\n"
+            "Cada entrada puede ser un nivel en cm o un caudal en m3/s, a eleccion "
+            "de quien programa el calendario. Con el argumento Modo el equipo "
+            "escribe junto con la consigna 0 (cm) o 1 (m3/s), y el programa "
+            "compara el nivel o el caudal segun ese valor (ver RatingCurve).\n\n"
             "Una instruccion por compuerta, hasta 4. Gasta 1 instruccion y 1 a "
-            "3 variables, en vez de las 3 variables y 2 instrucciones por "
-            "entrada de una escalera de If. Desde v1.9.3."
+            "4 variables, en vez de las 3 variables y 2 instrucciones por "
+            "entrada de una escalera de If. Desde v1.9.3; el Modo, desde v1.11.0."
         ),
         parametros=[
             Param(
                 nombre="Consigna",
                 descripcion=(
-                    "La variable que mueve la agenda: el nivel que el lazo "
-                    "trata de mantener. Conviene ponerla en PreserveVariables."
+                    "La variable que mueve la agenda: el nivel (cm) o el caudal "
+                    "(m3/s) que el lazo trata de mantener, segun el Modo. "
+                    "Conviene ponerla en PreserveVariables."
                 ),
             ),
             Param(
@@ -513,18 +518,92 @@ CATALOGO: "list[Instr]" = [
                 ),
                 opcional=True,
             ),
+            Param(
+                nombre="Modo",
+                descripcion=(
+                    "Variable donde el equipo deja la unidad de la consigna "
+                    "vigente: 0 = cm de nivel, 1 = m3/s de caudal. Se escribe "
+                    "en el mismo instante que la consigna. Sin ella, todas las "
+                    "entradas se toman como cm. Va en PreserveVariables junto "
+                    "con la consigna."
+                ),
+                opcional=True,
+            ),
         ],
         ejemplo=(
-            "Public Consigna_cm, Agenda_N, Agenda_Serie\n"
-            "PreserveVariables Consigna_cm\n"
-            "SetpointSchedule(Consigna_cm, 1, Agenda_N, Agenda_Serie)"
+            "Public Consigna, Agenda_N, Agenda_Serie, Modo_Consigna\n"
+            "PreserveVariables Consigna, Modo_Consigna\n"
+            "SetpointSchedule(Consigna, 1, Agenda_N, Agenda_Serie, Modo_Consigna)"
         ),
         trampa=(
             "El programa NO debe asignarle valor a la consigna en cada scan: "
             "la agenda escribe antes de las asignaciones y esa asignacion la "
             "pisa. Y sin PreserveVariables, si el equipo reinicia sin reloj "
             "sincronizado la consigna arranca en 0 y nadie la corrige hasta "
-            "que haya hora."
+            "que haya hora. Con Modo, preserva tambien la variable del modo: "
+            "una consigna en m3/s con el modo vuelto a 0 se leeria como cm."
+        ),
+    ),
+    Instr(
+        nombre="RatingCurve",
+        firma="RatingCurve(Caudal, Nivel, a, b)",
+        resumen="Caudal a partir del nivel con la curva de aforo Q = a * h^b",
+        categoria="Entradas",
+        detalle=(
+            "Calcula en cada scan Caudal = a * Nivel^b, la forma que ajusta una "
+            "planilla sobre la tabla de aforo de un rio. El CRBasic del Opta no "
+            "tiene potencia (solo Abs, Int y Sqr), asi que un exponente como "
+            "1.4991 no se puede escribir con asignaciones: por eso existe esta "
+            "instruccion.\n\n"
+            "Corre una vez por scan, despues de MedianRun y ANTES de las "
+            "asignaciones: el programa compara con el caudal de ese mismo scan, "
+            "calculado sobre el nivel ya filtrado. Gasta 0 instrucciones.\n\n"
+            "Con SetpointSchedule y su argumento Modo permite programar el "
+            "calendario en m3/s: el lazo compara Caudal con la consigna cuando "
+            "Modo vale 1, y Nivel cuando vale 0. Desde v1.11.0."
+        ),
+        parametros=[
+            Param(
+                nombre="Caudal",
+                descripcion=(
+                    "La variable donde queda el caudal calculado. No puede ser "
+                    "la misma que Nivel ni recibir una asignacion del programa: "
+                    "la curva corre antes y la asignacion la pisaria."
+                ),
+            ),
+            Param(
+                nombre="Nivel",
+                descripcion=(
+                    "La variable con el nivel del rio, en la unidad con que se "
+                    "ajusto la curva (cm si la tabla de aforo es regla en cm)."
+                ),
+            ),
+            Param(
+                nombre="a",
+                descripcion=(
+                    "Coeficiente de la curva: mayor que 0, hasta 1000000. Un "
+                    "numero o una Const, no una variable."
+                ),
+            ),
+            Param(
+                nombre="b",
+                descripcion=(
+                    "Exponente de la curva, de 0.1 a 5. Un numero o una Const, "
+                    "no una variable."
+                ),
+            ),
+        ],
+        ejemplo=(
+            "Public Nivel_cm, Caudal_m3s\n"
+            "Units Caudal_m3s = m3/s\n"
+            "RatingCurve(Caudal_m3s, Nivel_cm, 0.015, 1.4991)"
+        ),
+        trampa=(
+            "Nivel menor o igual a 0 da caudal 0, y un nivel NAN da NAN: el "
+            "caudal no puede ser mas confiable que el nivel del que sale. La "
+            "curva solo vale dentro del rango de la tabla de aforo; mas alla "
+            "es una extrapolacion. Y a y b son los de la curva ajustada: si "
+            "la planilla redondeo el coeficiente, el caudal sale con ese error."
         ),
     ),
     Instr(
