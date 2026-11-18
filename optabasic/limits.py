@@ -12,7 +12,8 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: MODBUS SCAN.
 #: La 1.10.1 apaga los cuatro relés al (re)cargar un programa; no cambia el
 #: parser ni sus límites.
-FIRMWARE_VERSION = "1.10.1"
+#: La 1.10.2 enciende el LED del frente de cada relé junto con el relé.
+FIRMWARE_VERSION = "1.10.2"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11
