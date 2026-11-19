@@ -16,7 +16,9 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: La 1.11.0 agrega RatingCurve (curva de aforo caudal = a * nivel^b) y la
 #: unidad de cada entrada de la agenda (cm o m3/s) con un cuarto argumento
 #: Modo en SetpointSchedule.
-FIRMWARE_VERSION = "1.11.0"
+#: La 1.11.1 acota la espera de DHCP sin cable de red (antes 60 s sin atender el
+#: USB ni medir, y un reinicio por watchdog); no cambia el parser ni sus límites.
+FIRMWARE_VERSION = "1.11.1"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11

@@ -227,11 +227,7 @@ class EquipoUSB:
                 continue
             self.info, self.tablas = info, tablas
             return tablas
-        raise ErrorUSB(
-            "El equipo no responde a la consulta. Puede que el firmware sea "
-            "anterior a 1.7.3 (sin rescate por USB) o que recién esté "
-            f"arrancando: esperá 10 segundos y reintentá. ({ultimo})"
-        )
+        raise ErrorUSB(f"El equipo no responde a la consulta ({ultimo}).")
 
     # ── Descarga ────────────────────────────────────────────────────────
     @staticmethod

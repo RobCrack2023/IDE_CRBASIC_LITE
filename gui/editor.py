@@ -153,6 +153,10 @@ class EditorCRBasic(QPlainTextEdit):
         self.completer.setWidget(self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setCompletionMode(QCompleter.PopupCompletion)
+        # Sin esto, ↓ en el ultimo item (o ↑ en el primero) deja la lista SIN
+        # nada seleccionado, y Enter cierra sin insertar. Con una sola
+        # coincidencia pasaba con cualquier flecha.
+        self.completer.setWrapAround(False)
         self.completer.activated[str].connect(self._insertar_completado)
         self.ayuda_firma = AyudaDeFirma(self)
         self.actualizar_diccionario([])
@@ -348,7 +352,9 @@ class EditorCRBasic(QPlainTextEdit):
     def _mostrar_completado(self, forzar: bool) -> None:
         popup = self.completer.popup()
         prefijo = self._prefijo_actual()
-        if not forzar and (len(prefijo) < 2 or not prefijo[-1:].isalnum()):
+        # El guion bajo es parte del nombre (Nivel_cm): cerrar la lista al
+        # escribirlo la hacia parpadear justo cuando se escribe una variable.
+        if not forzar and (len(prefijo) < 2 or not (prefijo[-1:].isalnum() or prefijo[-1:] == "_")):
             popup.hide()
             return
         if prefijo != self.completer.completionPrefix():

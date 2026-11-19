@@ -34,6 +34,19 @@ from PyQt5.QtWidgets import (
 from optabasic import usb_rescate as usb
 
 
+TEXTO_SIN_RESPUESTA = (
+    "El puerto USB se abrió pero el equipo no respondió.\n\n"
+    "Qué revisar:\n"
+    "• Sin cable de red o sin red: un equipo con firmware anterior a la 1.11.1 "
+    "puede pasar más de un minuto buscando red sin atender el USB, y reiniciarse. "
+    "Espera uno o dos minutos y vuelve a conectar.\n"
+    "• Si lo acabas de encender, espera unos 20 segundos.\n"
+    "• Cierra el Monitor Serie del Arduino IDE u otro programa que use el puerto.\n"
+    "• Un firmware anterior a la 1.7.3 no tiene rescate por USB.\n\n"
+    "Detalle: {detalle}"
+)
+
+
 class _Tarea(QThread):
     """Corre una función en un hilo y avisa cómo terminó."""
 
@@ -230,9 +243,23 @@ class DialogoUSB(QDialog):
             self.estado.setText(str(e))
             return
         self._ajustes.setValue("usb/puerto", dev)
-        self.estado.setText("Conectado. Leyendo tablas del equipo…")
+        self.estado.setText("Puerto abierto. Esperando respuesta del equipo…")
         self._habilitar()
-        self._correr(lambda t: self.equipo.leer_tablas(), self._tablas_leidas)
+        self._correr(lambda t: self.equipo.leer_tablas(), self._tablas_leidas,
+                     self._conexion_fallo)
+
+    def _conexion_fallo(self, mensaje: str):
+        """El puerto abrió pero el equipo no contestó (o contestó con error).
+
+        Antes el diálogo se quedaba en «Conectado» con el botón «Desconectar» y
+        el motivo en una línea chica de arriba: quien conecta un equipo sin red
+        creía que andaba. Ahora se cierra el puerto, vuelve el botón «Conectar»
+        y sale una ventana, que no se puede pasar por alto.
+        """
+        self._log(mensaje)
+        self._desconectar()
+        self.estado.setText("No se pudo conectar con el equipo.")
+        QMessageBox.warning(self, "No se pudo conectar", TEXTO_SIN_RESPUESTA.format(detalle=mensaje))
 
     def _desconectar(self):
         if self._ocupado():

@@ -87,3 +87,50 @@ def test_un_fallo_tambien_vuelve_al_hilo_de_la_ventana(app):
     d._traer_programa()
     esperar(app, lambda: not d._ocupado() and "No se pudo leer" in d.estado.text())
     assert all(h is threading.main_thread() for h in hilos)
+
+
+class EquipoMudo:
+    """Un puerto que abre bien pero donde el equipo no contesta nada, como un
+    Opta sin red ocupado buscando DHCP."""
+
+    def __init__(self):
+        self.cerrado = False
+
+    def write(self, datos):
+        pass
+
+    def read(self, n=1):
+        time.sleep(0.002)
+        return b""
+
+    def close(self):
+        self.cerrado = True
+
+
+def test_equipo_que_no_contesta_avisa_y_vuelve_a_conectar(app, monkeypatch):
+    mudo = EquipoMudo()
+
+    def abrir(dev):
+        e = EquipoUSB(mudo)
+        e.escala = 0.02          # no esperar los 12 s de verdad
+        return e
+
+    avisos = []
+    monkeypatch.setattr("gui.usb_dialog.usb.abrir_puerto", abrir)
+    monkeypatch.setattr("gui.usb_dialog.QMessageBox.warning",
+                        lambda *a: avisos.append(a[1:3]))
+    d = DialogoUSB(lambda: (None, None), None)
+    d.puertos.clear()
+    d.puertos.addItem("USB de prueba", "COM99")
+    d._conectar_o_desconectar()
+    esperar(app, lambda: bool(avisos))
+    # lo que ve quien opera: una ventana con el motivo y el botón en «Conectar»
+    titulo, texto = avisos[0]
+    assert titulo == "No se pudo conectar"
+    assert "red" in texto and "no respond" in texto
+    esperar(app, lambda: d.equipo is None)
+    assert d.btn_conectar.text() == "Conectar"
+    assert d.btn_conectar.isEnabled()
+    assert d.puertos.isEnabled()
+    assert mudo.cerrado, "tiene que soltar el puerto para poder reintentar"
+    assert d.estado.text() == "No se pudo conectar con el equipo."
