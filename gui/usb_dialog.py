@@ -4,6 +4,8 @@ Es lo mismo que hace la página `rescatar_registros.html` del repo OptaPakBus,
 pero adentro del IDE: se usa cuando el equipo no tiene red (o el módem no
 anda) y hay que ir a la estación con un cable USB-C.
 
+También carga un firmware nuevo (.bin) y restablece el equipo de fábrica.
+
 Toda la conversación con el equipo corre en un hilo aparte para que la
 ventana no se congele durante una descarga larga.
 """
@@ -47,6 +49,14 @@ TEXTO_SIN_RESPUESTA = (
 )
 
 
+def _texto_error(mensaje: str) -> str:
+    """«timeout» es lo que ve la capa de protocolo; a quien opera hay que decirle
+    qué pasó."""
+    if mensaje == "timeout":
+        return "El equipo no respondió (se agotó el tiempo de espera)."
+    return mensaje
+
+
 class _Tarea(QThread):
     """Corre una función en un hilo y avisa cómo terminó."""
 
@@ -76,7 +86,7 @@ class DialogoUSB(QDialog):
         super().__init__(parent)
         self._abrir_en_editor = abrir_en_editor
         self.setWindowTitle("Rescate por USB")
-        self.setMinimumSize(640, 640)
+        self.setMinimumSize(640, 760)
         self._datos_programa = datos_programa
         self.equipo = None
         self._tarea = None
@@ -100,6 +110,12 @@ class DialogoUSB(QDialog):
         fila.addWidget(self.btn_conectar)
         f.addLayout(fila)
         f.addWidget(self.estado)
+        self.btn_vars = QPushButton("Ver las variables en vivo…")
+        self.btn_vars.setToolTip(
+            "Los valores que el equipo tiene ahora, sin servidor. Solo lectura; "
+            "hace falta el firmware 1.12.0 o posterior.")
+        self.btn_vars.clicked.connect(self._ver_variables)
+        f.addWidget(self.btn_vars)
 
         # ── Descarga ────────────────────────────────────────────────────
         self.tabla = QComboBox()
@@ -177,6 +193,30 @@ class DialogoUSB(QDialog):
         fila_prog.addWidget(self.btn_programa)
         p.addLayout(fila_prog)
 
+        # ── Firmware y restablecer ──────────────────────────────────────
+        self.lbl_firmware = QLabel("Firmware instalado: —")
+        self.btn_firmware = QPushButton("Cargar firmware (.bin)…")
+        self.btn_firmware.clicked.connect(self._cargar_firmware)
+        self.btn_formatear = QPushButton("Restablecer de fábrica…")
+        self.btn_formatear.clicked.connect(self._restablecer)
+        aviso_fw = QLabel(
+            "<b>Cargar firmware:</b> usá el archivo <i>OptaPakBus.ino.bin</i> (no el "
+            "«with_bootloader»). El equipo se reinicia al instalarlo y tarda cerca "
+            "de un minuto; no desconectes el cable ni la energía.<br>"
+            "<b>Restablecer:</b> borra el programa, las tablas, los registros y el "
+            "log. El firmware no se toca. Si vas a cambiar de firmware, restablecé "
+            "primero y cargá el firmware después, no al revés. "
+            "<b>Descargá los registros antes.</b>")
+        aviso_fw.setWordWrap(True)
+        g_fw = QGroupBox("4. Firmware y restablecer de fábrica")
+        pf = QVBoxLayout(g_fw)
+        pf.addWidget(self.lbl_firmware)
+        pf.addWidget(aviso_fw)
+        fila_fw = QHBoxLayout()
+        fila_fw.addWidget(self.btn_formatear)
+        fila_fw.addWidget(self.btn_firmware)
+        pf.addLayout(fila_fw)
+
         self.registro = QPlainTextEdit()
         self.registro.setReadOnly(True)
         self.registro.setMaximumBlockCount(500)
@@ -187,6 +227,7 @@ class DialogoUSB(QDialog):
         caja.addWidget(g_con)
         caja.addWidget(g_des)
         caja.addWidget(g_prog)
+        caja.addWidget(g_fw)
         caja.addWidget(self.registro)
 
         self._llenar_puertos()
@@ -208,6 +249,9 @@ class DialogoUSB(QDialog):
         self.btn_programa.setEnabled(libre)
         self.btn_traer.setEnabled(libre and self._abrir_en_editor is not None
                                   and self.equipo.info.programa is not None)
+        self.btn_firmware.setEnabled(libre)
+        self.btn_formatear.setEnabled(libre)
+        self.btn_vars.setEnabled(libre)
         self.btn_cancelar.setEnabled(self._ocupado())
 
     @pyqtSlot(str)
@@ -271,6 +315,8 @@ class DialogoUSB(QDialog):
         self.tabla.clear()
         self.info_tabla.clear()
         self.lbl_programa.setText("Programa instalado: —")
+        self.lbl_firmware.setText("Firmware instalado: —")
+        self.barra.setMaximum(1)
         self.barra.setValue(0)
         self._habilitar()
 
@@ -296,6 +342,7 @@ class DialogoUSB(QDialog):
             txt = (f"Programa instalado: {info.programa.replace('CPU:', '')} — "
                    f"{info.prog_bytes} bytes, firma {info.prog_firma}.")
         self.lbl_programa.setText(txt)
+        self.lbl_firmware.setText(f"Firmware instalado: {info.firmware or 'desconocido'}.")
         self._info_tabla()
         self._habilitar()
 
@@ -479,6 +526,147 @@ class DialogoUSB(QDialog):
         # sin congelar la ventana, y sin pisar este mensaje.
         self._resumen = msg
         QTimer.singleShot(1200, self._refrescar)
+
+    # ── Variables en vivo ───────────────────────────────────────────────
+    def _ver_variables(self):
+        from .variables_dialog import DialogoVariables      # evita el import circular
+        DialogoVariables(self.equipo, parent=self).exec_()
+        self._habilitar()
+
+    # ── Firmware ────────────────────────────────────────────────────────
+    def _cargar_firmware(self):
+        """Elegir el .bin, revisarlo, cargarlo, verificarlo e instalarlo.
+
+        Dos confirmaciones, porque es lo único que puede dejar el equipo sin
+        arrancar: antes de empezar (cargar no cambia nada) y antes de instalar
+        (desde ahí no hay marcha atrás ni cancelación).
+        """
+        carpeta = self._ajustes.value("usb/carpeta_firmware", "")
+        ruta, _ = QFileDialog.getOpenFileName(
+            self, "Firmware compilado (OptaPakBus.ino.bin)", carpeta, "Firmware (*.bin)")
+        if not ruta:
+            return
+        self._ajustes.setValue("usb/carpeta_firmware", os.path.dirname(ruta))
+        try:
+            with open(ruta, "rb") as f:
+                datos = f.read()
+            nuevo = usb.analizar_firmware(datos, os.path.basename(ruta))
+        except (OSError, usb.ErrorUSB) as e:
+            QMessageBox.warning(self, "Ese archivo no sirve", str(e))
+            return
+
+        instalado = self.equipo.info.firmware or ""
+        cmp = (usb.version_tupla(nuevo.version) > usb.version_tupla(instalado)) \
+            - (usb.version_tupla(nuevo.version) < usb.version_tupla(instalado))
+        nota = ""
+        if instalado and cmp == 0:
+            nota = "\n\nATENCIÓN: es la MISMA versión que ya tiene el equipo."
+        elif instalado and cmp < 0:
+            nota = "\n\nATENCIÓN: es una versión ANTERIOR a la instalada."
+        r = QMessageBox.question(
+            self, "Cargar firmware",
+            f"Se va a cargar el firmware {nuevo.version} ({nuevo.tamano} bytes, "
+            f"CRC {nuevo.crc:08X}) en «{self.equipo.info.estacion}».\n"
+            f"Instalado ahora: {instalado or 'desconocido'}.{nota}\n\n"
+            "Durante la carga NO desconectes el cable ni la energía. Todavía no "
+            "se instala: antes se verifica lo que llegó.\n\n¿Continuar?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        self.estado.setText(f"Enviando el firmware {nuevo.version}…")
+
+        def trabajo(tarea):
+            self.equipo.cargar_firmware(datos, lambda a, b: tarea.avance.emit(a, b))
+            return nuevo
+
+        self._correr(trabajo, self._firmware_cargado, self._firmware_fallo)
+
+    def _firmware_fallo(self, mensaje):
+        mensaje = _texto_error(mensaje)
+        self._log(mensaje)
+        self.estado.setText("No se pudo cargar el firmware.")
+        QMessageBox.warning(
+            self, "No se pudo cargar el firmware",
+            f"{mensaje}\n\nEl equipo sigue con su firmware actual.")
+
+    def _firmware_cargado(self, nuevo):
+        self.estado.setText(f"Firmware {nuevo.version} cargado y verificado en el equipo.")
+        r = QMessageBox.question(
+            self, "Instalar el firmware",
+            f"El firmware {nuevo.version} quedó cargado y verificado.\n\n"
+            "¿Instalarlo ahora? El equipo se reiniciará y tarda cerca de un minuto. "
+            "Desde aquí ya no se puede cancelar ni volver atrás: no desconectes el "
+            "cable ni la energía.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            self.equipo._cancelar_en_equipo()
+            self.estado.setText("Instalación cancelada: el equipo sigue con su firmware actual.")
+            return
+        self.estado.setText("Instalando el firmware…")
+        # Se arranca fuera de este callback: sigue corriendo dentro de la tarea anterior.
+        QTimer.singleShot(0, lambda: self._correr(
+            lambda t: self.equipo.instalar_firmware(),
+            lambda _: self._reiniciando(
+                f"Instalando el firmware {nuevo.version}. El equipo se está reiniciando: "
+                "espera cerca de un minuto y conecta de nuevo para comprobar la versión."),
+            self._firmware_fallo_instalar))
+
+    def _firmware_fallo_instalar(self, mensaje):
+        mensaje = _texto_error(mensaje)
+        self._log(mensaje)
+        self.estado.setText("No se pudo iniciar la instalación.")
+        QMessageBox.warning(self, "No se pudo instalar", mensaje)
+
+    def _reiniciando(self, texto):
+        """El equipo acaba de reiniciarse solo: soltar el puerto y explicarlo."""
+        self._desconectar()
+        self.estado.setText(texto)
+        self._log(texto)
+        QMessageBox.information(self, "Equipo reiniciándose", texto)
+
+    # ── Restablecer de fábrica ──────────────────────────────────────────
+    def _restablecer(self):
+        """FORMAT. No se pide escribir el nombre de la estación: el cable USB es
+        local y la ventana ya muestra con qué equipo se habla. El nombre se le
+        manda al equipo solo, porque el firmware lo exige como confirmación."""
+        nombre = self.equipo.info.estacion
+        r = QMessageBox.question(
+            self, "Restablecer de fábrica",
+            f"Se va a BORRAR TODO lo guardado en «{nombre}»:\n"
+            "programa, tablas, registros y log.\n\n"
+            "El firmware no se toca. Esta acción no se puede deshacer.\n"
+            "¿Ya descargaste los registros que necesitas?\n\n¿Continuar?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        self.estado.setText("Borrando… (puede tardar unos segundos)")
+        self.barra.setMaximum(0)          # barra «ocupado»: no hay porcentaje
+        self._correr(lambda t: self.equipo.restablecer(), self._restablecido,
+                     self._restablecer_fallo)
+
+    def _restablecer_fallo(self, mensaje):
+        mensaje = _texto_error(mensaje)
+        self.barra.setMaximum(1)
+        self.barra.setValue(0)
+        self._log(mensaje)
+        self.estado.setText("No se pudo restablecer el equipo.")
+        QMessageBox.warning(self, "No se pudo restablecer", mensaje)
+
+    def _restablecido(self, res):
+        self.barra.setMaximum(1)
+        self.barra.setValue(0)
+        if res.get("estado") == "OK":
+            self._reiniciando(
+                "Equipo restablecido. Se está reiniciando: espera unos 30 segundos y "
+                "conecta de nuevo. Después puedes cargarle el firmware o un programa.")
+            return
+        self._log(f"restablecer: {res}")
+        self._desconectar()
+        texto = (f"El borrado fue parcial (datos: {'ok' if res.get('datos') else 'falló'}, "
+                 f"partición de actualización: {'ok' if res.get('ota') else 'falló'}). "
+                 "Si persiste, usa QSPIFormat desde el Arduino IDE.")
+        self.estado.setText(texto)
+        QMessageBox.warning(self, "Borrado parcial", texto)
 
     def _refrescar(self):
         if self.equipo is not None and not self._ocupado():

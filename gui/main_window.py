@@ -1,9 +1,10 @@
 """Ventana principal del IDE."""
 
 import os
+import re
 
 from PyQt5.QtCore import QSettings, Qt, QTimer
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -39,6 +40,12 @@ from .snippets import PLANTILLAS, PROGRAMA_NUEVO
 
 RETARDO_ANALISIS_MS = 350
 
+
+
+def _num_const(valor: float) -> str:
+    """Número de una constante: sin ceros de relleno ni notación científica."""
+    texto = f"{valor:.5f}".rstrip("0").rstrip(".")
+    return texto if texto not in ("", "-") else "0.0"
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
@@ -154,7 +161,12 @@ class VentanaPrincipal(QMainWindow):
         equipo.addAction(self._accion("&Enviar al equipo…", self.enviar, "F9"))
         equipo.addAction(self._accion(
             "Rescate por &USB…", self.abrir_usb, "Ctrl+U",
-            "Bajar los registros del equipo y cargarle el programa por cable USB-C"))
+            "Bajar los registros, cargar el programa o un firmware nuevo y "
+            "restablecer el equipo por cable USB-C"))
+        equipo.addAction(self._accion(
+            "Variables en vi&vo (USB)…", self.abrir_variables, "Ctrl+Shift+U",
+            "Ver los valores que tiene el equipo ahora por cable USB-C, sin "
+            "servidor (solo lectura)"))
 
         ver = barra.addMenu("&Ver")
         ver.addAction(self._accion("Alternar tema &oscuro", self.alternar_tema, "Ctrl+D"))
@@ -215,6 +227,7 @@ class VentanaPrincipal(QMainWindow):
         g.agregar(cinta.boton("Enviar al equipo"))
         g = equipo.grupo("Cable USB")
         g.agregar(cinta.boton("Rescate por USB"))
+        g.agregar(cinta.boton("Variables en vivo (USB)"))
 
         vista = cinta.pagina("Vista")
         g = vista.grupo("Aspecto")
@@ -393,6 +406,11 @@ class VentanaPrincipal(QMainWindow):
             return listo if listo is not None else (None, None)
         DialogoUSB(programa, self.abrir_desde_equipo, self).exec_()
 
+    def abrir_variables(self):
+        """Variables en vivo por USB (solo lectura), con su propia conexión."""
+        from .variables_dialog import DialogoVariables
+        DialogoVariables(parent=self).exec_()
+
     def abrir_desde_equipo(self, datos: bytes, nombre: str) -> bool:
         """Pone en el editor el programa que se leyó del equipo. Devuelve
         False si el usuario prefirió conservar lo que tenía abierto."""
@@ -500,7 +518,43 @@ class VentanaPrincipal(QMainWindow):
             parent=self,
         )
         dialogo.insertar.connect(self._insertar_bloque)
+        dialogo.aplicar.connect(self._aplicar_constantes)
         dialogo.exec_()
+
+    def _aplicar_constantes(self, valores: dict):
+        """Cambia el valor de `Const NOMBRE = x` en el programa abierto.
+
+        Respeta el comentario de la línea. Las constantes que el programa no
+        tiene se insertan donde está el cursor, para que no se pierdan.
+        """
+        patron = re.compile(r"^(\s*Const\s+)(\w+)(\s*=\s*)(-?[\d.]+)(.*)$", re.I)
+        por_nombre = {n.lower(): (n, v) for n, v in valores.items()}
+        cambiadas = []
+        cur = self.editor.textCursor()
+        cur.beginEditBlock()
+        bloque = self.editor.document().begin()
+        while bloque.isValid():
+            m = patron.match(bloque.text())
+            if m and m.group(2).lower() in por_nombre:
+                nombre, valor = por_nombre.pop(m.group(2).lower())
+                texto = f"{m.group(1)}{m.group(2)}{m.group(3)}{_num_const(valor)}{m.group(5)}"
+                c = QTextCursor(bloque)
+                c.select(QTextCursor.LineUnderCursor)
+                c.insertText(texto)
+                cambiadas.append(nombre)
+            bloque = bloque.next()
+        cur.endEditBlock()
+        if por_nombre:
+            lineas = [f"Const {n} = {_num_const(v)}" for n, v in por_nombre.values()]
+            self._insertar_bloque(chr(10).join(lineas) + chr(10))
+        self.analizar()
+        partes = []
+        if cambiadas:
+            partes.append("Actualicé " + ", ".join(cambiadas))
+        if por_nombre:
+            partes.append("Agregué " + ", ".join(n for n, _ in por_nombre.values())
+                          + " (no estaban en el programa)")
+        self.statusBar().showMessage(". ".join(partes) + ".", 8000)
 
     def _insertar_bloque(self, texto: str):
         """Inserta el código del asistente al principio de una línea nueva."""

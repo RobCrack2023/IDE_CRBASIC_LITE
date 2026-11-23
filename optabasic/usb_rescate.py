@@ -10,24 +10,39 @@ respuestas; las respuestas son las líneas que empiezan con ``#D,``.
     PROG DATA <off> <hex>        PROG,ACK,<hasta>
     PROG END <firma>             PROG,OK,...
     ABORT                        cancela la operación en curso
+    FW BEGIN <n> <crc32>         FW,READY,<chunk>      (desde 1.7.5)
+    FW DATA <off> <base64>       FW,ACK,<hasta>
+    FW END                       FW,VERIFIED,<crc32>   (el equipo relee lo escrito)
+    FW APPLY                     FW,REBOOTING          (instala y reinicia)
+    FORMAT <estación>            FORMAT,OK|PARCIAL,<datos>,<ota>   (desde 1.7.6)
 
 Esta capa no depende de Qt ni de pyserial: recibe cualquier objeto con
 ``write(bytes)``, ``read(n)`` (que devuelve lo que haya o ``b""`` al vencer
 su timeout) y ``close()``. Eso permite probarla con un equipo simulado.
 
-Solo están las operaciones de datos y de programa. Cargar firmware y
-restablecer de fábrica se dejaron en la página web a propósito: son las dos
-que pueden dejar el equipo inutilizable y no se pueden probar sin hardware.
+Además de los datos y el programa, desde aquí se puede cargar un firmware nuevo
+(FW ...) y restablecer de fábrica (FORMAT): las mismas dos operaciones que ya
+hacía la página web. Son las que pueden dejar el equipo inutilizable: ninguna
+tiene marcha atrás automática si el firmware nuevo no arranca.
 """
 
+import base64
 import re
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 BAUDIOS = 115200
 MAX_PROG_BYTES = 16384
 CHUNK_PROG = 80
+CHUNK_FW = 144                 # bytes por FW DATA (el equipo lo confirma en READY)
+FW_MIN_BYTES = 65536           # igual que el equipo: menos no es un firmware
+FW_MAX_BYTES = 1966080         # OTA_SLOT_SIZE del firmware
+FW_USB_MIN = "1.7.5"           # primera versión que acepta firmware por USB
+FORMAT_MIN = "1.7.6"           # primera versión con restablecer de fábrica
+VARS_MIN = "1.12.0"            # primera versión con VARS (variables en vivo)
+_MARCA_FW = re.compile(rb"OPTAPAKBUS-FW:([0-9][0-9.]*);")
 
 _FILA = re.compile(r"^\d{4}-\d{2}-\d{2} ")
 
@@ -49,6 +64,15 @@ class InfoEquipo:
     prog_bytes: int = 0
     prog_firma: str = ""
     almacenamiento_ok: Optional[int] = None
+
+
+@dataclass
+class Variable:
+    """Una variable del programa tal como la tiene el equipo ahora."""
+
+    nombre: str
+    unidad: str
+    valor: float          # nan si el equipo informa NAN
 
 
 @dataclass
@@ -88,6 +112,51 @@ def calcular_firma(datos: bytes) -> int:
             sig += 1
         sig = (((sig + (j >> 8) + b) & 0xFF) | (j << 8)) & 0xFFFF
     return sig
+
+
+def version_tupla(texto: str) -> tuple:
+    """«1.11.1» -> (1, 11, 1). Lo que no sea número se ignora; vacío da ()."""
+    return tuple(int(x) for x in re.findall(r"\d+", texto or ""))
+
+
+def crc32(datos: bytes) -> int:
+    """CRC-32 estándar (IEEE, el de zlib): el que el equipo compara en FW END."""
+    return zlib.crc32(datos) & 0xFFFFFFFF
+
+
+@dataclass
+class InfoFirmware:
+    version: str
+    tamano: int
+    crc: int
+
+
+def analizar_firmware(datos: bytes, nombre: str = "") -> InfoFirmware:
+    """Revisa un .bin ANTES de mandarlo al equipo y devuelve qué es.
+
+    Las mismas comprobaciones que hace la página web y que repite el equipo en
+    FW BEGIN/DATA: tamaño, tabla de vectores ARM y la marca de OptaPakBus que
+    lleva el firmware desde 1.7.5. Lanza ErrorUSB con el motivo si no sirve.
+    """
+    if "with_bootloader" in (nombre or "").lower():
+        raise ErrorUSB(
+            "Ese es el archivo «with_bootloader», que trae también el cargador de "
+            "arranque y sirve para grabar con cable de programación, no por USB. "
+            "Usá el .bin sin «with_bootloader» (OptaPakBus.ino.bin).")
+    if len(datos) < FW_MIN_BYTES or len(datos) > FW_MAX_BYTES:
+        raise ErrorUSB(
+            f"El tamaño ({len(datos)} bytes) no corresponde a un firmware del equipo "
+            f"(entre {FW_MIN_BYTES} y {FW_MAX_BYTES}).")
+    sp = int.from_bytes(datos[0:4], "little")
+    rv = int.from_bytes(datos[4:8], "little")
+    # Tabla de vectores ARM: SP en RAM y Reset handler (impar, Thumb) en flash.
+    if not (0x20000000 <= sp < 0x30000000 and rv & 1 and 0x08000000 <= rv < 0x08200000):
+        raise ErrorUSB("El archivo no parece un firmware compilado para el Opta.")
+    m = _MARCA_FW.search(datos)
+    if not m:
+        raise ErrorUSB("El archivo no es un firmware de OptaPakBus (o es anterior a "
+                       "1.7.5 y no trae identificación).")
+    return InfoFirmware(m.group(1).decode(), len(datos), crc32(datos))
 
 
 def listar_puertos() -> "list[tuple[str, str]]":
@@ -228,6 +297,36 @@ class EquipoUSB:
             self.info, self.tablas = info, tablas
             return tablas
         raise ErrorUSB(f"El equipo no responde a la consulta ({ultimo}).")
+
+    # ── Variables en vivo ───────────────────────────────────────────────
+    def leer_variables(self) -> "list[Variable]":
+        """VARS: el valor actual de cada variable del programa (solo lectura).
+
+        Sirve para calibrar o revisar un equipo sin pasar por el servidor. Un
+        valor que el equipo no tiene (sensor Modbus caído) llega como NAN.
+        """
+        self._exigir_version(VARS_MIN, "puede mostrar las variables en vivo")
+        variables: "list[Variable]" = []
+
+        def en_linea(linea):
+            p = linea.split(",")
+            if p[0] == "VAR" and len(p) >= 4:
+                try:
+                    valor = float(p[3])            # también entiende NAN, INF y -INF
+                except ValueError:
+                    # OVF / -OVF: el equipo no puede escribir un número tan grande
+                    valor = float("nan")
+                    if "OVF" in p[3].upper():
+                        valor = float("-inf") if p[3].startswith("-") else float("inf")
+                variables.append(Variable(p[1], p[2], valor))
+            elif p[0] == "OK":
+                return True
+            elif p[0] == "ERR":
+                raise ErrorUSB(",".join(p[1:]))
+            return False
+
+        self.pedir("VARS", en_linea, 4.0)
+        return variables
 
     # ── Descarga ────────────────────────────────────────────────────────
     @staticmethod
@@ -429,3 +528,132 @@ class EquipoUSB:
                 if str(e) != "timeout":
                     raise
         raise ErrorUSB("el equipo dejó de responder")
+
+    # ── Firmware ────────────────────────────────────────────────────────
+    def _exigir_version(self, minima: str, que: str) -> None:
+        """Avisa con claridad si el firmware instalado es anterior a `minima`."""
+        actual = version_tupla(self.info.firmware)
+        if actual and actual < version_tupla(minima):
+            raise ErrorUSB(
+                f"Este equipo tiene el firmware {self.info.firmware}, que no {que}: "
+                f"hace falta la {minima} o superior. Actualizalo una vez con el "
+                "Arduino IDE o por OTA.")
+
+    def cargar_firmware(self, datos: bytes, progreso: Callable[[int, int], None] = None) -> None:
+        """Manda un .bin y lo deja VERIFICADO en el equipo, sin instalarlo.
+
+        El equipo guarda el archivo en su partición de actualización, lo vuelve
+        a leer y compara el CRC (FW END): solo si coincide acepta el siguiente
+        paso, `instalar_firmware()`. Si algo falla aquí el equipo sigue con su
+        firmware actual. Hay que haber leído las tablas antes (para saber la
+        versión del equipo).
+        """
+        self._exigir_version(FW_USB_MIN, "acepta cargar firmware por USB")
+        analizar_firmware(datos)        # no mandar nada que el equipo va a rechazar
+        chunk = [CHUNK_FW]
+
+        def listo(linea):
+            p = linea.split(",")
+            if p[0] == "FW" and len(p) > 1 and p[1] == "READY":
+                chunk[0] = min(CHUNK_FW, int(p[2]) if len(p) > 2 and p[2].isdigit() else CHUNK_FW)
+                return True
+            if p[0] == "ERR":
+                raise ErrorUSB(",".join(p[1:]))
+            return False
+
+        try:
+            self.pedir(f"FW BEGIN {len(datos)} {crc32(datos)}", listo, 15.0)
+            for off in range(0, len(datos), chunk[0]):
+                parte = datos[off:off + chunk[0]]
+                hasta = off + len(parte)
+                self._enviar_bloque_fw(off, parte, hasta)
+                if progreso:
+                    progreso(hasta, len(datos))
+
+            def verificado(linea):
+                p = linea.split(",")
+                if p[0] == "FW" and len(p) > 1 and p[1] == "VERIFIED":
+                    return True
+                if p[0] == "ERR":
+                    raise ErrorUSB(",".join(p[1:]))
+                return False
+
+            # El equipo relee todo desde su flash: tarda unos segundos.
+            self.pedir("FW END", verificado, 60.0)
+        except ErrorUSB:
+            self._cancelar_en_equipo()
+            raise
+
+    def _enviar_bloque_fw(self, off: int, parte: bytes, hasta: int) -> None:
+        def ack(linea):
+            p = linea.split(",")
+            if p[0] == "FW" and len(p) > 2 and p[1] == "ACK":
+                return int(p[2]) >= hasta
+            if p[0] == "ERR":
+                raise ErrorUSB(",".join(p[1:]))
+            return False
+
+        b64 = base64.b64encode(parte).decode("ascii")
+        # Reenviar un trozo ya recibido es inocuo: el equipo contesta ACK con el
+        # siguiente offset que espera.
+        for _ in range(5):
+            try:
+                self.pedir(f"FW DATA {off} {b64}", ack, 5.0)
+                return
+            except Cancelado:
+                raise
+            except ErrorUSB as e:
+                if str(e) != "timeout":
+                    raise
+        raise ErrorUSB("el equipo dejó de responder")
+
+    def instalar_firmware(self) -> None:
+        """FW APPLY: el equipo instala el firmware verificado y se reinicia.
+
+        Desde acá no hay vuelta atrás ni cancelación. El instalador tarda cerca
+        de un minuto, durante el cual el puerto USB desaparece.
+        """
+        def listo(linea):
+            p = linea.split(",")
+            if p[0] == "FW" and len(p) > 1 and p[1] == "REBOOTING":
+                return True
+            if p[0] == "ERR":
+                raise ErrorUSB(",".join(p[1:]))
+            return False
+
+        self.pedir("FW APPLY", listo, 10.0)
+
+    # ── Restablecer de fábrica ──────────────────────────────────────────
+    def restablecer(self) -> dict:
+        """FORMAT: borra programa, tablas, log y la partición de actualización, y
+        reinicia. NO toca el firmware ni la tabla de particiones.
+
+        Devuelve {"estado": "OK"|"PARCIAL", "datos": bool, "ota": bool}. El
+        equipo exige el nombre de su estación como confirmación; se lo manda
+        este método con el que ya informó al conectar, porque quien opera está
+        frente al cable y no hay otro equipo al que confundir.
+        """
+        self._exigir_version(FORMAT_MIN, "sabe restablecerse de fábrica")
+        nombre = self.info.estacion
+        if not nombre:
+            raise ErrorUSB("No se conoce el nombre de la estación: desconectá y "
+                           "volvé a conectar para leerlo.")
+        if len(nombre.split()) != 1:
+            raise ErrorUSB("El nombre de la estación tiene espacios y el equipo no "
+                           "puede confirmarlo por USB. Restablecelo con la página "
+                           "web o con QSPIFormat desde el Arduino IDE.")
+        res = {}
+
+        def listo(linea):
+            p = linea.split(",")
+            if p[0] == "FORMAT" and len(p) >= 4:
+                res.update(estado=p[1], datos=p[2] == "1", ota=p[3] == "1")
+                return True
+            if p[0] == "ERR":
+                raise ErrorUSB(",".join(p[1:]))
+            return False
+
+        # Reformatear las dos particiones tarda: el equipo da señal de vida al
+        # watchdog pero no contesta hasta terminar.
+        self.pedir(f"FORMAT {nombre}", listo, 90.0)
+        return res

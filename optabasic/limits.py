@@ -18,7 +18,9 @@ cambia un límite, se cambia acá y todo el IDE queda consistente.
 #: Modo en SetpointSchedule.
 #: La 1.11.1 acota la espera de DHCP sin cable de red (antes 60 s sin atender el
 #: USB ni medir, y un reinicio por watchdog); no cambia el parser ni sus límites.
-FIRMWARE_VERSION = "1.11.1"
+#: La 1.12.0 agrega el comando USB VARS (variables en vivo, solo lectura); no
+#: cambia el parser ni sus límites.
+FIRMWARE_VERSION = "1.12.0"
 
 # ── Buffers y tamaños del parser (OptaPakBus.ino) ────────────────────────
 MAX_PROG_BYTES = 16384     # storedProg[16384] — 8192 hasta v1.6.11

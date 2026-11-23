@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QPushButton,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -34,6 +35,7 @@ from optabasic.sensors import (
     ERROR,
     SHUNT_NOMINAL,
     calcular_4_20,
+    calcular_calibracion,
     calcular_pulsos,
     calcular_ultrasonico,
 )
@@ -114,18 +116,22 @@ class AsistenteSensor(QDialog):
     """Calculadora de escalas para 4-20 mA y para contadores de pulsos."""
 
     insertar = pyqtSignal(str)
+    #: Valores de constantes ya declaradas en el programa (calibración).
+    aplicar = pyqtSignal(dict)
 
     def __init__(self, canales_libres=None, scan_seg: float = 10.0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Asistente de sensores")
         self.setMinimumSize(720, 700)
         self.scan_seg = scan_seg
+        self._equipo_usb = None            # conexión USB que se reutiliza al leer mA
         self.libres = canales_libres or list(range(1, N_ANALOG + 1))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._pestania_corriente(), "Sensor 4-20 mA")
         self.tabs.addTab(self._pestania_ultrasonico(), "Ultrasónico (nivel)")
         self.tabs.addTab(self._pestania_pulsos(), "Contador de pulsos")
+        self.tabs.addTab(self._pestania_calibracion(), "Calibrar con 2 puntos")
         self.tabs.currentChanged.connect(self._recalcular)
 
         botones = QDialogButtonBox(QDialogButtonBox.Close)
@@ -293,6 +299,116 @@ class AsistenteSensor(QDialog):
             self.u_ohm.setFocus()
         self._recalcular()
 
+    # ── Pestaña de calibración con medidas de terreno ───────────────────
+    def _pestania_calibracion(self) -> QWidget:
+        self.k_prefijo = QLineEdit("Rio")
+        self.k_prefijo.setToolTip("Rio da Rio_Mult, Rio_Off y Cero_Rio; CM da CM_Mult y CM_Off.")
+        self.k_d1 = self._spin(0, 100000, 100.0, 1, " cm")
+        self.k_m1 = self._spin(0, 30, 6.9, 3, " mA")
+        self.k_d2 = self._spin(0, 100000, 300.0, 1, " cm")
+        self.k_m2 = self._spin(0, 30, 15.2, 3, " mA")
+
+        self.k_ver = QCheckBox("Agregar un tercer punto para comprobar la recta")
+        self.k_d3 = self._spin(0, 100000, 200.0, 1, " cm")
+        self.k_m3 = self._spin(0, 30, 11.0, 3, " mA")
+        self.k_cero = QCheckBox("Calcular el cero de la regla (solo el RIKA del río)")
+        self.k_nivel = self._spin(-100000, 100000, 50.0, 1, " cm")
+        self.k_mnivel = self._spin(0, 30, 10.0, 3, " mA")
+        for w in (self.k_d3, self.k_m3, self.k_nivel, self.k_mnivel):
+            w.setEnabled(False)
+        self.k_ver.stateChanged.connect(
+            lambda s: [w.setEnabled(bool(s)) for w in (self.k_d3, self.k_m3)])
+        self.k_cero.stateChanged.connect(
+            lambda s: [w.setEnabled(bool(s)) for w in (self.k_nivel, self.k_mnivel)])
+
+        ayuda = QLabel(
+            "Pon un blanco plano frente al RIKA a una distancia medida con huincha "
+            "(desde la cara del sensor) y anota los mA que muestra el equipo "
+            "(<b>CM_filt</b> o <b>Rio_filt</b> en el HMI). Repítelo lejos. "
+            "Mientras más separados los puntos, mejor.")
+        ayuda.setWordWrap(True)
+
+        g1 = QGroupBox("Puntos medidos")
+        f1 = QFormLayout(g1)
+        self.k_ohm = self._spin(1, 10000, 269.0, 1, " Ω")
+        self.k_ohm.setToolTip(
+            "La resistencia física del lazo 4-20 mA de ESTE sensor. Con 269 Ω "
+            "el equipo muestra los mA reales; con otra, los muestra escalados.")
+        self.k_ohm.valueChanged.connect(self._recalcular)
+        f1.addRow("Constantes con el prefijo", self.k_prefijo)
+        f1.addRow("Resistencia del lazo", self.k_ohm)
+        f1.addRow("Punto 1: distancia real", self.k_d1)
+        f1.addRow("Punto 1: lo que lee", self._con_lectura(self.k_m1))
+        f1.addRow("Punto 2: distancia real", self.k_d2)
+        f1.addRow("Punto 2: lo que lee", self._con_lectura(self.k_m2))
+
+        g2 = QGroupBox("Opcional")
+        f2 = QFormLayout(g2)
+        f2.addRow(self.k_ver)
+        f2.addRow("Punto 3: distancia real", self.k_d3)
+        f2.addRow("Punto 3: lo que lee", self._con_lectura(self.k_m3))
+        f2.addRow(self.k_cero)
+        f2.addRow("Nivel que marca la regla", self.k_nivel)
+        f2.addRow("Lo que lee el RIKA ahora", self._con_lectura(self.k_mnivel))
+
+        self.k_resultado = _Resultado()
+        self.k_resultado.codigo.setMinimumHeight(90)
+
+        self.k_prefijo.textChanged.connect(self._recalcular)
+        for w in (self.k_d1, self.k_m1, self.k_d2, self.k_m2, self.k_d3, self.k_m3,
+                  self.k_nivel, self.k_mnivel):
+            w.valueChanged.connect(self._recalcular)
+        self.k_ver.stateChanged.connect(self._recalcular)
+        self.k_cero.stateChanged.connect(self._recalcular)
+
+        pagina = QWidget()
+        caja = QVBoxLayout(pagina)
+        caja.addWidget(ayuda)
+        fila = QHBoxLayout()
+        fila.addWidget(g1, 1)
+        fila.addWidget(g2, 1)
+        caja.addLayout(fila)
+        caja.addWidget(self.k_resultado, 1)
+        return pagina
+
+    def _con_lectura(self, spin) -> QWidget:
+        """El campo de mA con un botón que lo llena leyendo el equipo por USB."""
+        boton = QPushButton("Leer del equipo")
+        boton.setToolTip(
+            "Conecta por USB y toma el valor de CM_filt o Rio_filt (firmware 1.12.0 "
+            "o posterior). Se puede escribir a mano si no hay cable.")
+        boton.clicked.connect(lambda _=False, s=spin: self._leer_del_equipo(s))
+        w = QWidget()
+        fila = QHBoxLayout(w)
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.addWidget(spin, 1)
+        fila.addWidget(boton)
+        return w
+
+    def _leer_del_equipo(self, spin) -> None:
+        """Abre las variables en vivo para elegir una; la conexión se conserva
+        mientras el asistente siga abierto, así el segundo punto no reconecta."""
+        from .variables_dialog import DialogoVariables
+        d = DialogoVariables(equipo=self._equipo_usb, seleccionar=True,
+                             filtro="filt", parent=self)
+        d.conservar = True
+        d.exec_()
+        if d.fallo_equipo:
+            self._cerrar_usb()
+        elif self._equipo_usb is None and d.equipo is not None:
+            self._equipo_usb = d.equipo
+        if d.elegida is not None:
+            spin.setValue(d.elegida[1])
+
+    def _cerrar_usb(self) -> None:
+        if self._equipo_usb is not None:
+            self._equipo_usb.cerrar()
+        self._equipo_usb = None
+
+    def done(self, resultado) -> None:
+        self._cerrar_usb()
+        super().done(resultado)
+
     # ── Pestaña de pulsos ───────────────────────────────────────────────
     def _pestania_pulsos(self) -> QWidget:
         self.p_nombre = QLineEdit("Lluvia_mm")
@@ -430,6 +546,18 @@ class AsistenteSensor(QDialog):
                 modo="voltse" if self.u_voltse.isChecked() else "mA",
             )
             self.u_resultado.mostrar(self._escala)
+        elif self.tabs.currentIndex() == 3:
+            self._escala = calcular_calibracion(
+                dist1=self.k_d1.value(), ma1=self.k_m1.value(),
+                dist2=self.k_d2.value(), ma2=self.k_m2.value(),
+                prefijo=self.k_prefijo.text(),
+                shunt=self.k_ohm.value(),
+                dist3=self.k_d3.value() if self.k_ver.isChecked() else None,
+                ma3=self.k_m3.value() if self.k_ver.isChecked() else None,
+                nivel_real=self.k_nivel.value() if self.k_cero.isChecked() else None,
+                ma_nivel=self.k_mnivel.value() if self.k_cero.isChecked() else None,
+            )
+            self.k_resultado.mostrar(self._escala)
         else:
             self.p_maximo.setEnabled(self.p_verificar.isChecked())
             self.p_por_minuto.setEnabled(self.p_verificar.isChecked())
@@ -462,13 +590,22 @@ class AsistenteSensor(QDialog):
                 )
             self.p_resultado.mostrar(self._escala)
 
+        calibrando = self.tabs.currentIndex() == 3
+        self.btn_insertar.setText(
+            "Aplicar a las constantes del programa" if calibrando
+            else "Insertar en el programa")
         self.btn_insertar.setEnabled(not self._escala.hay_errores)
         self.btn_insertar.setToolTip(
             "Corregí los errores marcados antes de insertar el código."
-            if self._escala.hay_errores else ""
+            if self._escala.hay_errores else
+            "Cambia el valor de esas constantes si el programa ya las tiene; "
+            "las que falten se insertan donde está el cursor." if calibrando else ""
         )
 
     def _insertar(self):
         if self._escala and not self._escala.hay_errores:
-            self.insertar.emit(self._escala.codigo)
+            if self.tabs.currentIndex() == 3:
+                self.aplicar.emit(dict(self._escala.constantes))
+            else:
+                self.insertar.emit(self._escala.codigo)
             self.accept()

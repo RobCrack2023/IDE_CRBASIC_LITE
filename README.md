@@ -101,7 +101,7 @@ Para convertir eso a algo con sentido hay que calcular dos números
 es que un error acá no se nota: la estación reporta valores razonables que
 simplemente no son los reales.
 
-El asistente los calcula por vos, para dos tipos de sensor:
+El asistente los calcula por vos, para dos tipos de sensor y una calibración de terreno:
 
 **Sensores de 4-20 mA** (nivel, presión, caudal). Le decís qué mide el
 sensor —por ejemplo de 0 a 5 metros— y qué resistencia hay puesta en el
@@ -116,7 +116,14 @@ le da: no puede contar más de 20 pulsos por segundo. También te dibuja el
 circuito de entrada y calcula si la tensión llega para que el contador
 dispare, algo que es fácil de errar por medio voltio.
 
-En los dos casos el código sale escrito y listo para insertar. Si algo no
+**Calibrar con 2 puntos** (ultrasónicos en terreno). Si no te fías de la hoja
+del sensor, pones un blanco a dos distancias medidas con huincha, anotas los mA
+que lee el equipo en cada una, y te da la recta (`Mult` y `Offset`). Con un
+tercer punto comprueba que la recta cierra, y con el nivel de la regla calcula
+el cero del río. El botón *Aplicar a las constantes del programa* cambia el
+valor de esas `Const` en el programa abierto, sin tocar sus comentarios.
+
+En las tres primeras el código sale escrito y listo para insertar. Si algo no
 va a funcionar, el botón de insertar queda deshabilitado.
 
 ## Ayuda mientras escribís
@@ -159,7 +166,8 @@ escribe por pantalla, para poder mirar el resultado antes de pisar nada.
 | `F9` | lo envía al equipo |
 | `F1` | ayuda de la palabra donde está el cursor |
 | `Ctrl+M` | asistente de sensores |
-| `Ctrl+U` | rescate por USB: bajar registros y cargar el programa por cable |
+| `Ctrl+U` | rescate por USB: bajar registros, cargar el programa, cargar un firmware nuevo (`OptaPakBus.ino.bin`) y restablecer de fábrica, todo por cable |
+| `Ctrl+Shift+U` | variables en vivo por USB (solo lectura, firmware 1.12.0 o posterior): lo que el equipo tiene ahora, sin servidor. La calibración de 2 puntos tiene un botón *Leer del equipo* que llena los mA desde ahí |
 | `Ctrl+Espacio` | lista de instrucciones y variables |
 | `Ctrl+S` | guardar |
 

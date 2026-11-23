@@ -134,3 +134,128 @@ def test_equipo_que_no_contesta_avisa_y_vuelve_a_conectar(app, monkeypatch):
     assert d.puertos.isEnabled()
     assert mudo.cerrado, "tiene que soltar el puerto para poder reintentar"
     assert d.estado.text() == "No se pudo conectar con el equipo."
+
+
+# ── Firmware y restablecer de fábrica ───────────────────────────────────
+from PyQt5.QtWidgets import QMessageBox  # noqa: E402
+
+from tests.test_usb_firmware import EquipoConFirmware, imagen  # noqa: E402
+
+
+@pytest.fixture
+def dialogo_fw(app, monkeypatch, tmp_path):
+    """Un diálogo conectado a un equipo con firmware, con todas las ventanas
+    emergentes simuladas: guarda lo que se le mostró y contesta lo que se le diga."""
+    falso = EquipoConFirmware()
+    d = DialogoUSB(lambda: (None, None), None)
+    d.equipo = EquipoUSB(falso)
+    d.equipo.escala = 0.05
+    d._correr(lambda t: d.equipo.leer_tablas(), d._tablas_leidas)
+    esperar(app, lambda: not d._ocupado() and d.equipo.info.estacion)
+
+    class Pantalla:
+        respuestas = []        # lo que contesta cada question(), en orden
+        preguntas = []
+        avisos = []
+        archivo = ""
+
+    monkeypatch.setattr("gui.usb_dialog.QFileDialog.getOpenFileName",
+                        lambda *a, **k: (Pantalla.archivo, ""))
+
+    def pregunta(parent, titulo, texto, *a):
+        Pantalla.preguntas.append((titulo, texto))
+        return Pantalla.respuestas.pop(0)
+
+    monkeypatch.setattr("gui.usb_dialog.QMessageBox.question", pregunta)
+    for nombre in ("warning", "information"):
+        monkeypatch.setattr(f"gui.usb_dialog.QMessageBox.{nombre}",
+                            lambda parent, titulo, texto, *a: Pantalla.avisos.append((titulo, texto)))
+    Pantalla.respuestas, Pantalla.preguntas, Pantalla.avisos = [], [], []
+    return d, falso, Pantalla, tmp_path
+
+
+def _bin(tmp_path, datos, nombre="OptaPakBus.ino.bin"):
+    ruta = tmp_path / nombre
+    ruta.write_bytes(datos)
+    return str(ruta)
+
+
+def test_los_botones_de_firmware_y_restablecer_siguen_la_conexion(app):
+    d = DialogoUSB(lambda: (None, None), None)
+    assert not d.btn_firmware.isEnabled() and not d.btn_formatear.isEnabled()
+
+
+def test_cargar_e_instalar_el_firmware_de_punta_a_punta(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    datos = imagen("1.11.1")
+    pantalla.archivo = _bin(tmp, datos)
+    pantalla.respuestas = [QMessageBox.Yes, QMessageBox.Yes]     # cargar, instalar
+    d._cargar_firmware()
+    esperar(app, lambda: falso.reiniciado and d.equipo is None, 15)
+    assert bytes(falso.fw) == datos
+    # la primera pregunta ya dice versión y tamaño; no pide escribir ningún nombre
+    titulo, texto = pantalla.preguntas[0]
+    assert "1.11.1" in texto and "Estacion1" in texto and str(len(datos)) in texto
+    assert pantalla.avisos and "reiniciando" in pantalla.avisos[-1][1]
+
+
+def test_si_no_se_confirma_la_instalacion_se_aborta_y_el_equipo_sigue_igual(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    pantalla.archivo = _bin(tmp, imagen("1.11.1"))
+    pantalla.respuestas = [QMessageBox.Yes, QMessageBox.No]
+    d._cargar_firmware()
+    esperar(app, lambda: len(pantalla.preguntas) == 2 and not d._ocupado())
+    assert "ABORT" in falso.comandos
+    assert not falso.reiniciado
+    assert d.equipo is not None, "sigue conectado: no se instaló nada"
+
+
+def test_cancelar_la_primera_pregunta_no_manda_nada(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    pantalla.archivo = _bin(tmp, imagen())
+    pantalla.respuestas = [QMessageBox.No]
+    d._cargar_firmware()
+    assert not any(c.startswith("FW") for c in falso.comandos)
+
+
+def test_un_archivo_que_no_es_firmware_se_rechaza_con_aviso(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    pantalla.archivo = _bin(tmp, imagen(), "OptaPakBus.ino.with_bootloader.bin")
+    d._cargar_firmware()
+    assert pantalla.avisos and "with_bootloader" in pantalla.avisos[0][1]
+    assert not pantalla.preguntas
+    assert not any(c.startswith("FW") for c in falso.comandos)
+
+
+def test_misma_version_o_anterior_se_avisa_en_la_pregunta(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw          # el equipo tiene 1.11.0
+    pantalla.archivo = _bin(tmp, imagen("1.9.0"))
+    pantalla.respuestas = [QMessageBox.No]
+    d._cargar_firmware()
+    assert "ANTERIOR" in pantalla.preguntas[0][1]
+
+
+def test_restablecer_no_pide_el_nombre_y_manda_el_de_la_estacion(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    pantalla.respuestas = [QMessageBox.Yes]
+    d._restablecer()
+    esperar(app, lambda: falso.formateado == "Estacion1" and d.equipo is None, 15)
+    assert "BORRAR TODO" in pantalla.preguntas[0][1]
+    assert any("restablecido" in a[1] for a in pantalla.avisos)
+
+
+def test_restablecer_sin_confirmar_no_manda_nada(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    pantalla.respuestas = [QMessageBox.No]
+    d._restablecer()
+    assert not any(c.startswith("FORMAT") for c in falso.comandos)
+    assert d.equipo is not None
+
+
+def test_borrado_parcial_se_informa_como_aviso(app, dialogo_fw):
+    d, falso, pantalla, tmp = dialogo_fw
+    falso.format_parcial = True
+    pantalla.respuestas = [QMessageBox.Yes]
+    d._restablecer()
+    esperar(app, lambda: pantalla.avisos and d.equipo is None, 15)
+    assert "parcial" in pantalla.avisos[-1][1]

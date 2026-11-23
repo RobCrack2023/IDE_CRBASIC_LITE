@@ -403,3 +403,83 @@ def test_ultrasonico_el_codigo_generado_no_tiene_errores():
                     "Sample(1,Nivel,FP2)\nEndTable\n")
         errores = [d for d in r.diagnostics if d.severity.value == "error"]
         assert not errores, (modo, [d.message for d in errores])
+
+
+# ── Calibración con dos medidas de terreno ───────────────────────────────
+from optabasic.sensors import calcular_calibracion  # noqa: E402
+
+
+def test_calibracion_dos_puntos_da_la_recta_exacta():
+    # Recta real: dist = mA * 24.26 - 68.2
+    e = calcular_calibracion(100.0, (100 + 68.2) / 24.26, 300.0, (300 + 68.2) / 24.26)
+    assert e.mult == pytest.approx(24.26)
+    assert e.offset == pytest.approx(-68.2)
+    assert e.constantes == {"Rio_Mult": pytest.approx(24.26),
+                            "Rio_Off": pytest.approx(-68.2)}
+    assert "Const Rio_Mult = 24.26" in e.codigo
+    assert "Const Rio_Off  = -68.2" in e.codigo
+    assert not e.hay_errores
+
+
+def test_calibracion_prefijo_propio():
+    e = calcular_calibracion(50.0, 4.87, 60.0, 5.29, prefijo="CM")
+    assert set(e.constantes) == {"CM_Mult", "CM_Off"}
+
+
+def test_calibracion_calcula_el_cero_de_la_regla():
+    mult, off = 24.26, -68.2
+    ma = (180 - off) / mult              # el RIKA ve 180 cm de aire
+    e = calcular_calibracion(100.0, (100 - off) / mult, 300.0, (300 - off) / mult,
+                             nivel_real=120.0, ma_nivel=ma)
+    assert e.constantes["Cero_Rio"] == pytest.approx(300.0)
+    assert "Const Cero_Rio = 300" in e.codigo
+
+
+def test_calibracion_rechaza_lecturas_iguales_y_pendiente_negativa():
+    assert calcular_calibracion(100.0, 7.0, 300.0, 7.0).hay_errores
+    assert calcular_calibracion(100.0, 7.0, 100.0, 9.0).hay_errores
+    e = calcular_calibracion(300.0, 7.0, 100.0, 15.0)      # al alejar baja la corriente
+    assert e.hay_errores and not e.constantes
+
+
+def test_calibracion_avisa_de_puntos_juntos_y_de_zona_ciega():
+    from optabasic.sensors import AVISO
+    juntos = calcular_calibracion(100.0, 7.0, 130.0, 8.2)
+    assert any(n == AVISO and "amplifica" in t for n, t in juntos.avisos)
+    ciega = calcular_calibracion(20.0, 3.9, 300.0, 15.0)
+    assert any(n == AVISO and "zona ciega" in t for n, t in ciega.avisos)
+
+
+def test_calibracion_tercer_punto_comprueba_la_recta():
+    from optabasic.sensors import AVISO
+    bien = calcular_calibracion(100.0, 6.93, 300.0, 15.18,
+                                dist3=200.0, ma3=(200 + 68.2) / 24.26)
+    assert not any(n == AVISO for n, _ in bien.avisos)
+    mal = calcular_calibracion(100.0, 6.93, 300.0, 15.18, dist3=230.0, ma3=11.05)
+    assert any(n == AVISO and "se desvía" in t for n, t in mal.avisos)
+
+
+def test_calibracion_con_otra_resistencia_escala_los_umbrales_de_falla():
+    # 325 ohm: el equipo muestra los mA x1.2 (312 ohm efectivos contra 260 del firmware)
+    e = calcular_calibracion(100.0, 8.3, 300.0, 18.2, shunt=325.0)
+    f = shunt_efectivo(325.0) / SHUNT_NOMINAL
+    assert f == pytest.approx(1.2, abs=0.001)
+    assert e.constantes["CM_Min_mA"] == pytest.approx(4.05 * f)
+    assert e.constantes["CM_Max_mA"] == pytest.approx(20.5 * f)
+    assert "Const CM_Max_mA = 24.6" in e.codigo
+    assert not e.hay_errores
+
+
+def test_calibracion_con_la_resistencia_de_siempre_no_toca_los_umbrales():
+    e = calcular_calibracion(100.0, 6.93, 300.0, 15.18, shunt=269.0)
+    assert "CM_Min_mA" not in e.constantes
+    assert "CM_Max_mA" not in e.codigo
+
+
+def test_calibracion_no_toma_por_falla_un_punto_valido_con_325_ohm():
+    from optabasic.sensors import AVISO
+    # 20 mA reales se muestran como 24 mA con 325 ohm: no es saturacion
+    e = calcular_calibracion(100.0, 8.3, 400.0, 24.0, shunt=325.0)
+    assert not any(n == AVISO and "saturado" in t for n, t in e.avisos)
+    sat = calcular_calibracion(100.0, 8.3, 400.0, 25.5, shunt=325.0)
+    assert any(n == AVISO and "saturado" in t for n, t in sat.avisos)

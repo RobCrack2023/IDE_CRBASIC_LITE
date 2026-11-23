@@ -1065,7 +1065,7 @@ def test_modbusrtu_esta_en_el_catalogo():
 
 
 def test_la_version_del_motor_es_la_del_firmware():
-    assert L.FIRMWARE_VERSION == "1.11.1"
+    assert L.FIRMWARE_VERSION == "1.12.0"
 
 
 # ── RatingCurve y Modo de SetpointSchedule (v1.11.0) ────────────────────

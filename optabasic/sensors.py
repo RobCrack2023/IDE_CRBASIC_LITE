@@ -105,6 +105,9 @@ class Escala:
     codigo: str = ""
     avisos: "list[tuple[str, str]]" = field(default_factory=list)
     datos: "list[tuple[str, str]]" = field(default_factory=list)
+    #: Constantes que el cálculo propone, por nombre. Las usa la calibración
+    #: para actualizar un programa que ya las tiene declaradas.
+    constantes: "dict[str, float]" = field(default_factory=dict)
 
     def avisar(self, nivel: str, texto: str) -> None:
         self.avisos.append((nivel, texto))
@@ -396,6 +399,157 @@ def calcular_ultrasonico(
     ]
     esc.codigo = esc.codigo.rstrip("\n") + "\n" + "\n".join(
         l for l in lineas if l is not None)
+    return esc
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Calibración de un ultrasónico con medidas de terreno
+# ═════════════════════════════════════════════════════════════════════════
+#: Corriente bajo la cual el RIKA está en su zona ciega (los programas de
+#: Colchagua marcan falla por debajo de esto).
+MA_ZONA_CIEGA = 4.05
+MA_SATURADO = 20.5
+
+
+def calcular_calibracion(
+    dist1: float,
+    ma1: float,
+    dist2: float,
+    ma2: float,
+    prefijo: str = "Rio",
+    dist3: "float | None" = None,
+    ma3: "float | None" = None,
+    nivel_real: "float | None" = None,
+    ma_nivel: "float | None" = None,
+    unidad: str = "cm",
+    shunt: float = 269.0,
+) -> Escala:
+    """Recta distancia = mA * Mult + Offset a partir de dos medidas reales.
+
+    `shunt` es el resistor físico del lazo. El firmware divide siempre por
+    260 Ω, así que con otro resistor los «mA» que muestra el equipo son los
+    reales multiplicados por `shunt_efectivo / 260` (con 325 Ω, 1.2 veces).
+    La recta se calcula sobre lo que el equipo MUESTRA, que es lo que se
+    anota, y por eso no hay que corregirla; lo que sí cambia son los
+    umbrales de falla (zona ciega y saturación), que se escalan.
+
+    Se pone un blanco a una distancia conocida (con huincha), se lee la
+    corriente que el equipo ve (la variable `*_mA` o `*_filt`) y se repite a
+    otra distancia. Mientras más separados estén los dos puntos, mejor.
+
+    `dist3`/`ma3` (opcional) es un tercer punto de comprobación: no entra en
+    la recta, solo se compara contra ella.
+
+    `nivel_real` y `ma_nivel` (opcionales) sirven para el cero de la regla:
+    el nivel que marca la regla y la corriente que lee el RIKA en ese mismo
+    momento. De ahí sale `Cero_<prefijo>` = nivel + distancia que ve el RIKA.
+    """
+    prefijo = (prefijo or "Rio").strip() or "Rio"
+    u = f" {unidad}" if unidad else ""
+
+    if abs(ma2 - ma1) < 1e-9:
+        e = Escala(1.0, 0.0)
+        e.avisar(ERROR, "Las dos lecturas de corriente son iguales: con eso no se "
+                        "puede trazar la recta. Mové el blanco entre una medida y la otra.")
+        return e
+    if abs(dist2 - dist1) < 1e-9:
+        e = Escala(1.0, 0.0)
+        e.avisar(ERROR, "Las dos distancias son iguales: con eso no se puede "
+                        "trazar la recta.")
+        return e
+
+    mult = (dist2 - dist1) / (ma2 - ma1)
+    offset = dist1 - ma1 * mult
+    esc = Escala(mult, offset)
+    if mult <= 0:
+        esc.avisar(ERROR, "La pendiente sale negativa: al alejar el blanco la "
+                          "corriente tiene que SUBIR. Revisá que no estén cambiadas "
+                          "las dos lecturas o las dos distancias.")
+        return esc
+
+    efectivo = shunt_efectivo(shunt) if shunt > 0 else SHUNT_NOMINAL
+    factor = efectivo / SHUNT_NOMINAL
+    zona = MA_ZONA_CIEGA * factor          # umbrales en los mA que muestra el equipo
+    satur = MA_SATURADO * factor
+    otro_shunt = abs(factor - 1.0) > 0.005
+
+    esc.constantes = {f"{prefijo}_Mult": mult, f"{prefijo}_Off": offset}
+    esc.datos.append(("Recta", f"distancia = mA × {_num(mult, 5)} + ({_num(offset, 3)})"))
+    esc.datos.append((
+        "Alcance del sensor",
+        f"{_num(zona * mult + offset, 1)}{u} a {_num(20 * factor * mult + offset, 1)}{u} "
+        f"(de 4 mA a 20 mA reales)"))
+    if otro_shunt:
+        esc.datos.append((
+            "Resistencia del lazo",
+            f"{shunt:g} Ω ({efectivo:.1f} Ω efectivos): el equipo muestra los mA "
+            f"×{factor:.3f}. Zona ciega bajo {_num(zona, 3)}, saturado sobre "
+            f"{_num(satur, 2)} (mA mostrados)"))
+        esc.constantes["CM_Min_mA"] = zona
+        esc.constantes["CM_Max_mA"] = satur
+    v20 = 20.0 * efectivo / 1000.0
+    if v20 > VREF:
+        esc.avisar(ERROR, f"Con {shunt:g} Ω, 20 mA dan {v20:.2f} V y la entrada llega "
+                          f"hasta {VREF:g} V: el sensor nunca va a marcar el máximo.")
+    elif shunt > 0 and v20 > 5.0:
+        esc.avisar(NOTA, f"A 20 mA caen {v20:.1f} V en la resistencia: la fuente del "
+                         "lazo tiene que dar eso más el voltaje mínimo del sensor. "
+                         "Con 12 V puede no alcanzar; revisá la hoja del RIKA.")
+
+    # ── Calidad de los puntos ───────────────────────────────────────────
+    for n, ma in ((1, ma1), (2, ma2)):
+        if ma < zona:
+            esc.avisar(AVISO, f"El punto {n} ({_num(ma, 3)} mA) está bajo "
+                              f"{_num(zona, 3)} mA: es la zona ciega y la lectura "
+                              "queda clavada en 4 mA. No sirve como punto de calibración.")
+        elif ma > satur:
+            esc.avisar(AVISO, f"El punto {n} ({_num(ma, 3)} mA) pasa de "
+                              f"{_num(satur, 2)} mA: el sensor está saturado o con falla.")
+    if abs(ma2 - ma1) < 2.0:
+        esc.avisar(AVISO, f"Los puntos están a solo {_num(abs(ma2 - ma1), 2)} mA de "
+                          "distancia: un error pequeño de lectura se amplifica mucho "
+                          "en la recta. Separalos más (cerca y lejos del rango de trabajo).")
+    elif abs(dist2 - dist1) < 50:
+        esc.avisar(AVISO, f"Los puntos están a solo {_num(abs(dist2 - dist1), 1)}{u} "
+                          "uno del otro: conviene separarlos al menos 50 cm.")
+
+    # ── Punto de comprobación ───────────────────────────────────────────
+    if dist3 is not None and ma3 is not None:
+        previsto = ma3 * mult + offset
+        error = previsto - dist3
+        esc.datos.append(("Comprobación",
+                          f"la recta da {_num(previsto, 1)}{u} y mediste "
+                          f"{_num(dist3, 1)}{u}: error {error:+.1f}{u}"))
+        if abs(error) > max(1.0, 0.01 * abs(dist2 - dist1)):
+            esc.avisar(AVISO, f"El punto de comprobación se desvía {error:+.1f}{u} de "
+                              "la recta: o alguna medida está mal, o el sensor no es "
+                              "lineal. Repetí las medidas antes de usar estos valores.")
+        else:
+            esc.avisar(NOTA, "El punto de comprobación cae sobre la recta.")
+
+    # ── Cero de la regla ────────────────────────────────────────────────
+    lineas = [
+        f"'-- Recta del RIKA: distancia = mA * Mult + Off (calibrada con 2 puntos)",
+        f"Const {prefijo}_Mult = {_num(mult, 5)}",
+        f"Const {prefijo}_Off  = {_num(offset, 2)}",
+    ]
+    if nivel_real is not None and ma_nivel is not None:
+        dist_ahora = ma_nivel * mult + offset
+        cero = nivel_real + dist_ahora
+        esc.constantes[f"Cero_{prefijo}"] = cero
+        esc.datos.append(("Cero de la regla",
+                          f"el RIKA ve {_num(dist_ahora, 1)}{u} con la regla en "
+                          f"{_num(nivel_real, 1)}{u}: Cero_{prefijo} = {_num(cero, 1)}{u}"))
+        if cero <= 0:
+            esc.avisar(ERROR, "El cero sale negativo: el RIKA tendría que estar "
+                              "debajo del cero de la regla. Revisá las medidas.")
+        lineas.append(f"Const Cero_{prefijo} = {_num(cero, 1)}")
+    if otro_shunt:
+        lineas.append("'-- Umbrales de falla en los mA que muestra el equipo "
+                      f"(lazo de {shunt:g} ohm)")
+        lineas.append(f"Const CM_Min_mA = {_num(zona, 3)}")
+        lineas.append(f"Const CM_Max_mA = {_num(satur, 2)}")
+    esc.codigo = chr(10).join(lineas) + chr(10)
     return esc
 
 
